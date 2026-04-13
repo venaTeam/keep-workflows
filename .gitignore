@@ -43,6 +43,7 @@ Thumbs.db
 
 # Logs
 *.log
+nohup.out
 
 # Unit test / coverage reports
 htmlcov/
