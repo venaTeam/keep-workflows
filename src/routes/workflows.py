@@ -121,6 +121,29 @@ def fetch_facet_options(
 
 
 @router.get(
+    "/providers",
+    description="Get providers specifically requested by the workflow engine UI components",
+)
+def fetch_workflow_providers(
+    authenticated_entity: AuthenticatedEntity = Depends(
+        IdentityManagerFactory.get_auth_verifier(["read:providers"])
+    ),
+):
+    from src.providers.providers_factory import ProvidersFactory
+    from src.providers.providers_service import ProvidersService
+    
+    tenant_id = authenticated_entity.tenant_id
+    providers = ProvidersFactory.get_all_providers()
+    installed_providers = ProvidersService.get_installed_providers(tenant_id)
+    linked_providers = ProvidersService.get_linked_providers(tenant_id)
+
+    return {
+        "providers": providers,
+        "installed_providers": installed_providers,
+        "linked_providers": linked_providers,
+    }
+
+@router.get(
     "/facets",
     description="Get workflow facets",
 )
@@ -317,6 +340,7 @@ def export_workflows(
 
 
 def get_event_from_body(body: dict, tenant_id: str):
+    body = body or {}
     event_body = body.get("body", {}) or body
     inputs = body.get("inputs", {})
     # Handle regular run from body

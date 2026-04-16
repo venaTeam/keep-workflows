@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from dotenv import find_dotenv, load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from starlette.middleware.cors import CORSMiddleware
 
 load_dotenv(find_dotenv())
 
@@ -56,18 +57,41 @@ def get_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     from src.routes.workflows import router as workflows_router
 
     app.include_router(workflows_router, prefix="/workflows", tags=["workflows"])
 
+    from fastapi import Depends
+    from src.identitymanager.authenticatedentity import AuthenticatedEntity
+    from src.identitymanager.identitymanagerfactory import IdentityManagerFactory
+
+    @app.get("/workflows/providers", tags=["providers"])
     @app.get("/providers", tags=["providers"])
-    async def get_providers():
+    async def get_providers(
+        authenticated_entity: AuthenticatedEntity = Depends(
+            IdentityManagerFactory.get_auth_verifier(["read:providers"])
+        ),
+    ):
         from src.providers.providers_factory import ProvidersFactory
+        from src.providers.providers_service import ProvidersService
+        
+        tenant_id = authenticated_entity.tenant_id
         providers = ProvidersFactory.get_all_providers()
+        installed_providers = ProvidersService.get_installed_providers(tenant_id)
+        linked_providers = ProvidersService.get_linked_providers(tenant_id)
+        
         return {
             "providers": providers,
-            "installed_providers": [],
-            "linked_providers": [],
+            "installed_providers": installed_providers,
+            "linked_providers": linked_providers,
         }
 
     @app.get("/", include_in_schema=False)

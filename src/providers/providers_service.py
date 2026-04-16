@@ -24,7 +24,10 @@ from src.common.models.db.provider import Provider, ProviderExecutionLog
 from src.common.models.provider import Provider as ProviderModel
 from src.common.utils.tenant_utils import get_or_create_api_key
 from src.contextmanager.contextmanager import ContextManager
-from src.event_subscriber.event_subscriber import EventSubscriber
+try:
+    from src.event_subscriber.event_subscriber import EventSubscriber
+except ModuleNotFoundError:
+    EventSubscriber = None
 from src.functions import cyaml
 from src.providers.base.base_provider import BaseProvider
 from src.providers.providers_factory import ProvidersFactory
