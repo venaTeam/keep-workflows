@@ -138,11 +138,11 @@ def test_http_workflow_sync_manual_trigger(db_session, workflow_manager, mocker)
 
     # Mock HTTP provider to return our mock workflows
     mock_http_validate_config = mocker.patch(
-        "keep.providers.http_provider.http_provider.HttpProvider.validate_config"
+        "src.providers.http_provider.http_provider.HttpProvider.validate_config"
     )
     mock_http_validate_config.return_value = True
     mock_http_query = mocker.patch(
-        "keep.providers.http_provider.http_provider.HttpProvider._query"
+        "src.providers.http_provider.http_provider.HttpProvider._query"
     )
     mock_http_query.return_value = MOCK_HTTP_WORKFLOWS_YAMLS
 
@@ -275,11 +275,11 @@ def test_workflow_update_from_workflow(db_session, workflow_manager, mocker):
 
     # Mock HTTP provider to return our modified workflow
     mock_http_validate_config = mocker.patch(
-        "keep.providers.http_provider.http_provider.HttpProvider.validate_config"
+        "src.providers.http_provider.http_provider.HttpProvider.validate_config"
     )
     mock_http_validate_config.return_value = True
     mock_http_query = mocker.patch(
-        "keep.providers.http_provider.http_provider.HttpProvider._query"
+        "src.providers.http_provider.http_provider.HttpProvider._query"
     )
     mock_http_query.return_value = [initial_workflow_yaml]
 

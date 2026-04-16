@@ -421,9 +421,18 @@ def get_firing_time(alert: dict, time_unit: str, **kwargs) -> str:
         # if the alert is not firing, there is no start firing time
         if alert_dto.status != AlertStatus.FIRING.value:
             return "0.00"
+
+        firing_start_time = getattr(alert_dto, "firingStartTime", None) or alert_dto.lastReceived
+        if not firing_start_time:
+            return "0.00"
+
+        firing_start_dt = datetime.datetime.fromisoformat(firing_start_time.replace("Z", "+00:00"))
+        if firing_start_dt.tzinfo is None:
+            firing_start_dt = firing_start_dt.replace(tzinfo=datetime.timezone.utc)
+
         firing = datetime.datetime.now(
             tz=datetime.timezone.utc
-        ) - datetime.datetime.fromisoformat(alert_dto.firingStartTime)
+        ) - firing_start_dt
     else:
         return "0.00"
 
@@ -488,8 +497,12 @@ def is_first_time(fingerprint: str, since: str = None, **kwargs) -> str:
     else:
         raise ValueError("Invalid time unit. Use 'm', 'h', 'd', or 'w'.")
 
-    current_time = datetime.datetime.utcnow()
-    if current_time - prevAlert.timestamp > time_delta:
+    current_time = datetime.datetime.now(datetime.timezone.utc)
+    prev_alert_timestamp = prevAlert.timestamp
+    if prev_alert_timestamp.tzinfo is None:
+        prev_alert_timestamp = prev_alert_timestamp.replace(tzinfo=datetime.timezone.utc)
+
+    if current_time - prev_alert_timestamp > time_delta:
         return True
     else:
         return False

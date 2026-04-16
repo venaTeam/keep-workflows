@@ -148,7 +148,7 @@ def test_workflow_postgres_results(db_session):
     parser = Parser()
     workflow_yaml = cyaml.safe_load(workflow_db.workflow_raw)
     with patch(
-        "keep.secretmanager.secretmanagerfactory.SecretManagerFactory.get_secret_manager"
+        "src.secretmanager.secretmanagerfactory.SecretManagerFactory.get_secret_manager"
     ) as mock_secret_manager:
         mock_secret_manager.return_value.read_secret.return_value = {
             "authentication": {
@@ -237,7 +237,7 @@ def test_workflow_postgres_results(db_session):
     ]
 
     with patch(
-        "keep.secretmanager.secretmanagerfactory.SecretManagerFactory.get_secret_manager"
+        "src.secretmanager.secretmanagerfactory.SecretManagerFactory.get_secret_manager"
     ) as mock_secret_manager:
         mock_secret_manager.return_value.read_secret.return_value = {
             "authentication": {
@@ -310,7 +310,7 @@ def test_workflow_enrichment_with_nested_results(db_session, create_alert):
     workflow_yaml = cyaml.safe_load(workflow_db.workflow_raw)
 
     with patch(
-        "keep.secretmanager.secretmanagerfactory.SecretManagerFactory.get_secret_manager"
+        "src.secretmanager.secretmanagerfactory.SecretManagerFactory.get_secret_manager"
     ) as mock_secret_manager:
         mock_secret_manager.return_value.read_secret.return_value = {}
         workflow = parser.parse(
@@ -395,7 +395,7 @@ def test_workflow_alert_creation(db_session):
     workflow_yaml = cyaml.safe_load(workflow_db.workflow_raw)
 
     with patch(
-        "keep.secretmanager.secretmanagerfactory.SecretManagerFactory.get_secret_manager"
+        "src.secretmanager.secretmanagerfactory.SecretManagerFactory.get_secret_manager"
     ) as mock_secret_manager:
         mock_secret_manager.return_value.read_secret.return_value = {}
         workflow = parser.parse(
@@ -497,7 +497,7 @@ def test_workflow_python(db_session):
     workflow_yaml = cyaml.safe_load(workflow_db.workflow_raw)
 
     with patch(
-        "keep.secretmanager.secretmanagerfactory.SecretManagerFactory.get_secret_manager"
+        "src.secretmanager.secretmanagerfactory.SecretManagerFactory.get_secret_manager"
     ) as mock_secret_manager:
         mock_secret_manager.return_value.read_secret.return_value = {}
         workflow = parser.parse(
@@ -561,7 +561,7 @@ def test_workflow_bash(db_session):
     workflow_yaml = cyaml.safe_load(workflow_db.workflow_raw)
 
     with patch(
-        "keep.secretmanager.secretmanagerfactory.SecretManagerFactory.get_secret_manager"
+        "src.secretmanager.secretmanagerfactory.SecretManagerFactory.get_secret_manager"
     ) as mock_secret_manager:
         mock_secret_manager.return_value.read_secret.return_value = {}
         workflow = parser.parse(
@@ -606,7 +606,7 @@ def test_workflow_bash_python(db_session):
             import random
             print(random.randint(1, 100))
             EOF
-            python script.py && rm script.py
+            python3 script.py && rm script.py
 """
     workflow_db = Workflow(
         id="test-bash",
@@ -624,7 +624,7 @@ def test_workflow_bash_python(db_session):
     workflow_yaml = cyaml.safe_load(workflow_db.workflow_raw)
 
     with patch(
-        "keep.secretmanager.secretmanagerfactory.SecretManagerFactory.get_secret_manager"
+        "src.secretmanager.secretmanagerfactory.SecretManagerFactory.get_secret_manager"
     ) as mock_secret_manager:
         mock_secret_manager.return_value.read_secret.return_value = {}
         workflow = parser.parse(
@@ -653,14 +653,14 @@ def test_workflow_bash_python(db_session):
 
 
 @patch(
-    "keep.providers.postgres_provider.postgres_provider.PostgresProvider._notify",
+    "src.providers.postgres_provider.postgres_provider.PostgresProvider._notify",
     return_value=None,
 )
 @patch(
-    "keep.providers.postgres_provider.postgres_provider.PostgresProvider.validate_config"
+    "src.providers.postgres_provider.postgres_provider.PostgresProvider.validate_config"
 )
-@patch("keep.step.step.StepError")
-@patch("keep.common.event_management.process_event_task.process_event")
+@patch("src.step.step.StepError")
+@patch("src.common.event_management.process_event_task.process_event")
 def test_workflow_keep_notify_after_another_foreach(
     mock_process_event,
     mock_step_error,
@@ -716,7 +716,7 @@ def test_workflow_keep_notify_after_another_foreach(
     workflow_yaml = cyaml.safe_load(workflow_db.workflow_raw)
 
     with patch(
-        "keep.secretmanager.secretmanagerfactory.SecretManagerFactory.get_secret_manager"
+        "src.secretmanager.secretmanagerfactory.SecretManagerFactory.get_secret_manager"
     ) as mock_secret_manager:
         mock_secret_manager.return_value.read_secret.return_value = {}
         workflow = parser.parse(

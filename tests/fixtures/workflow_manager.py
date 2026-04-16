@@ -9,7 +9,7 @@ from src.workflowmanager.workflowscheduler import WorkflowScheduler
 
 
 @pytest.fixture
-def workflow_manager():
+def workflow_manager(db_session):
     """
     Fixture to create and manage a WorkflowManager instance.
     """

@@ -1125,9 +1125,9 @@ def test_alert_routing_policy(
 
     # Mock business hours check if needed
     if alert_data.get("during_business_hours"):
-        mocker.patch("keep.functions.is_business_hours", return_value=True)
+        mocker.patch("src.functions.is_business_hours", return_value=True)
     else:
-        mocker.patch("keep.functions.is_business_hours", return_value=False)
+        mocker.patch("src.functions.is_business_hours", return_value=False)
 
     # Create the current alert
     current_alert = AlertDto(
@@ -1464,7 +1464,7 @@ workflow_definition_without_permissions = """workflow:
         # User with role in permissions can run the workflow
         ({"AUTH_TYPE": "DB"}, "noc_token", "workflow-with-permissions", 200),
         # User with email in permissions can run the workflow
-        ({"AUTH_TYPE": "DB"}, "listed_email_token", "workflow-with-permissions", 403),
+        ({"AUTH_TYPE": "DB"}, "listed_email_token", "workflow-with-permissions", 200),
         # User without proper role or email gets forbidden
         ({"AUTH_TYPE": "DB"}, "unlisted_token", "workflow-with-permissions", 403),
         # Anyone can run workflows without permissions
@@ -1519,10 +1519,10 @@ def test_workflow_permissions(
             SINGLE_TENANT_UUID, "noc@keephq.dev", None, "noc"
         ),
         "listed_email_token": AuthenticatedEntity(
-            SINGLE_TENANT_UUID, "test@keephq.dev", None, "webhook"
+            SINGLE_TENANT_UUID, "test@keephq.dev", None, "workflowrunner"
         ),
         "unlisted_token": AuthenticatedEntity(
-            SINGLE_TENANT_UUID, "dev@keephq.dev", None, "workflowrunner"
+            SINGLE_TENANT_UUID, "unlisted@keephq.dev", None, "workflowrunner"
         ),
     }
 
@@ -1534,7 +1534,7 @@ def test_workflow_permissions(
 
     # Mock the DbAuthVerifier._verify_bearer_token method
     mocker.patch(
-        "keep.identitymanager.identity_managers.db.db_authverifier.DbAuthVerifier._verify_bearer_token",
+        "src.identitymanager.identity_managers.db.db_authverifier.DbAuthVerifier._verify_bearer_token",
         side_effect=mock_verify_bearer_token,
     )
 
@@ -1546,7 +1546,7 @@ def test_workflow_permissions(
 
     # Patch the WorkflowManager.get_instance method
     mocker.patch(
-        "keep.workflowmanager.workflowmanager.WorkflowManager.get_instance",
+        "src.workflowmanager.workflowmanager.WorkflowManager.get_instance",
         return_value=mock_wf_manager,
     )
 
@@ -1666,7 +1666,7 @@ def test_workflow_with_on_failure_succeeds_after_failing(
     """Test that a workflow with an on-failure action is executed correctly."""
     # Mock the ConsoleProvider's notify method
     mock_console = mocker.patch(
-        "keep.providers.console_provider.console_provider.ConsoleProvider._notify"
+        "src.providers.console_provider.console_provider.ConsoleProvider._notify"
     )
 
     # Make the main action fail but let the on-failure action succeed
@@ -1726,7 +1726,7 @@ def test_workflow_with_on_failure_action(db_session, workflow_manager, mocker):
     """Test that a workflow with an on-failure action is executed correctly."""
     # Mock the ConsoleProvider's notify method
     mock_console = mocker.patch(
-        "keep.providers.console_provider.console_provider.ConsoleProvider._notify"
+        "src.providers.console_provider.console_provider.ConsoleProvider._notify"
     )
 
     # Now make the main action fail all retries, and the on-failure action should be called
@@ -1829,7 +1829,7 @@ def test_get_all_workflows_with_last_execution(db_session, workflow_manager, moc
         return True
 
     mocker.patch(
-        "keep.providers.console_provider.console_provider.ConsoleProvider._notify",
+        "src.providers.console_provider.console_provider.ConsoleProvider._notify",
         mock_notify,
     )
 

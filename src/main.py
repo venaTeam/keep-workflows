@@ -65,6 +65,11 @@ def get_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    import importlib
+    import sys
+
+    if "src.routes.workflows" in sys.modules:
+        importlib.reload(sys.modules["src.routes.workflows"])
     from src.routes.workflows import router as workflows_router
 
     app.include_router(workflows_router, prefix="/workflows", tags=["workflows"])

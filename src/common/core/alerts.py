@@ -17,7 +17,7 @@ from src.common.core.cel_to_sql.properties_metadata import (
 from src.common.core.cel_to_sql.sql_providers.get_cel_to_sql_provider_for_dialect import (
     get_cel_to_sql_provider,
 )
-from src.common.core.db import engine
+from src.common.core import db
 
 # This import is required to create the tables
 from src.common.core.facets import get_facet_options, get_facets
@@ -397,7 +397,7 @@ def query_last_alerts(tenant_id, query: QueryDto) -> Tuple[list[Alert], int]:
             SortOptionsDto(sort_by="timestamp", sort_dir="desc")
         ]
 
-    with Session(engine) as session:
+    with Session(db.engine) as session:
         try:
             total_count_query = build_total_alerts_query(
                 tenant_id=tenant_id, query=query_with_defaults
@@ -499,7 +499,7 @@ def get_alert_facets(
 
 
 def get_alert_potential_facet_fields(tenant_id: str) -> list[str]:
-    with Session(engine) as session:
+    with Session(db.engine) as session:
         query = (
             select(AlertField.field_name)
             .select_from(AlertField)
