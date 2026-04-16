@@ -8,6 +8,9 @@ from src.common.models.db.alert import Alert, LastAlert
 
 @pytest.fixture
 def test_app(request, monkeypatch, db_session):
+    from src.workflowmanager.workflowmanager import WorkflowManager
+    WorkflowManager._instance = None
+    
     # If parameters are passed via indirect
     if hasattr(request, "param") and isinstance(request, pytest.FixtureRequest):
         config_overrides = request.param
@@ -20,7 +23,8 @@ def test_app(request, monkeypatch, db_session):
     config.config = None # Force reload
     
     app = get_app()
-    return app
+    yield app
+    WorkflowManager._instance = None
 
 @pytest.fixture
 def client(test_app, db_session):
