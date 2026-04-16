@@ -58,6 +58,7 @@ setuptools = "^80.9.0"
 pytz = "^2024.1"
 arq = "0.26.3"
 astunparse = "^1.6.3"
+asteval = "^1.0.8"
 
 [tool.poetry.group.dev.dependencies]
 pre-commit = "^3.0.4"
