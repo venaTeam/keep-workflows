@@ -99,13 +99,13 @@ def get_app() -> FastAPI:
             "linked_providers": linked_providers,
         }
 
+    from src.routes.healthcheck import router as healthcheck_router
+
+    app.include_router(healthcheck_router, prefix="/healthcheck", tags=["healthcheck"])
+
     @app.get("/", include_in_schema=False)
     async def root():
         return {"message": app.description, "version": KEEP_VERSION}
-
-    @app.get("/healthz", include_in_schema=False)
-    async def healthz():
-        return {"status": "ok"}
 
     @app.exception_handler(Exception)
     async def catch_exception(request: Request, exc: Exception):
