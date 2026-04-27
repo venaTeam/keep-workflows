@@ -284,11 +284,13 @@ class WorkflowManager:
             raise
 
     def insert_events(self, tenant_id, events: typing.List[AlertDto | IncidentDto]):
+        print(f"DEBUG: insert_events called for tenant {tenant_id} with {len(events)} events")
         for event in events:
             self.logger.info("Getting all workflows", extra={"tenant_id": tenant_id})
             all_workflow_models = self.workflow_store.get_all_workflows(
                 tenant_id, exclude_disabled=True
             )
+            print(f"DEBUG: Found {len(all_workflow_models)} workflows in store for tenant {tenant_id}")
             self.logger.info(
                 "Got all workflows",
                 extra={

@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 import pytest
 from fastapi import HTTPException
 
-from src.api.routes.workflows import get_event_from_body
+from src.routes.workflows import get_event_from_body
 from src.parser.parser import Parser
 
 # Assuming WorkflowParser is the class containing the get_workflow_from_dict method
@@ -105,7 +105,7 @@ def test_handle_manual_event_workflow():
 
     # Mock create_workflow_execution
     with patch(
-        "keep.workflowmanager.workflowscheduler.create_workflow_execution"
+        "src.workflowmanager.workflowscheduler.create_workflow_execution"
     ) as mock_create_execution:
         mock_create_execution.return_value = "test_execution_id"
 
@@ -152,7 +152,7 @@ def test_handle_manual_event_workflow_test_run():
 
     # Mock create_workflow_execution
     with patch(
-        "keep.workflowmanager.workflowscheduler.create_workflow_execution"
+        "src.workflowmanager.workflowscheduler.create_workflow_execution"
     ) as mock_create_execution:
         mock_create_execution.return_value = "test_execution_id"
 

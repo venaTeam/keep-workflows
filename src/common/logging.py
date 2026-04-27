@@ -383,6 +383,12 @@ class CustomJsonFormatter(jsonlogger.JsonFormatter):
             log_record["worker_type"] = getattr(record, "worker_type", WORKER_TYPE)
 
 
+class UvicornAccessFormatter(logging.Formatter):
+    def format(self, record):
+        if not hasattr(record, "otelTraceID"):
+            record.otelTraceID = "-"
+        return super().format(record)
+
 CONFIG = {
     "version": 1,
     "disable_existing_loggers": False,
@@ -402,8 +408,9 @@ CONFIG = {
             "()": DevTerminalFormatter,
             "format": "%(asctime)s - %(thread)s %(otelTraceID)s %(threadName)s %(levelname)s - %(message)s",
         },
-        "uvicorn_access": {  # Add new formatter for uvicorn.access
-            "format": "%(asctime)s - %(otelTraceID)s - %(threadName)s - %(message)s"
+        "uvicorn_access": {
+            "()": "src.common.logging.UvicornAccessFormatter",
+            "format": "%(asctime)s - %(otelTraceID)s - %(threadName)s - %(message)s",
         },
     },
     "handlers": {
@@ -443,6 +450,7 @@ CONFIG = {
             "propagate": False,
         },
         "uvicorn.access": {  # Add uvicorn.access logger configuration
+            "()": "src.common.logging.CustomizedUvicornLogger",
             "handlers": ["uvicorn_access"],
             "level": get_gunicorn_log_level(),
             "propagate": False,
@@ -519,8 +527,7 @@ class CustomizedUvicornLogger(logging.Logger):
         rv = super().makeRecord(
             name, level, fn, lno, msg, args, exc_info, func, extra, sinfo
         )
-        if trace_id:
-            rv.__dict__["otelTraceID"] = trace_id
+        rv.__dict__["otelTraceID"] = trace_id if trace_id else "-"
         return rv
 
     def _log(
@@ -548,11 +555,13 @@ class CustomizedUvicornLogger(logging.Logger):
                     .scope.get("state", {})
                     .get("tenant_id", 0)
                 )
-                if trace_id:
-                    if extra is None:
-                        extra = {}
-                    extra.update({"otelTraceID": trace_id})
-                    found_frame = True
+                if trace_id is None or not trace_id:
+                    trace_id = "-"
+                
+                if extra is None:
+                    extra = {}
+                extra.update({"otelTraceID": trace_id})
+                found_frame = True
                 if tenant_id:
                     if extra is None:
                         extra = {}

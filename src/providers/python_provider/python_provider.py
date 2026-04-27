@@ -81,5 +81,5 @@ if __name__ == "__main__":
     )
 
     # Example query
-    result = python_provider._query(code="1 + 1", imports="src.common.models.alert")
+    result = python_provider._query(code="1 + 1", imports="keep.common.models.alert")
     print(result)  # Output: 2

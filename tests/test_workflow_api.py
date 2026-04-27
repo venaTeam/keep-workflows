@@ -10,7 +10,7 @@ VALID_API_KEY = "test-api-key"
 
 
 @pytest.mark.parametrize("test_app", ["NO_AUTH"], indirect=True)
-@patch("keep.api.routes.workflows.WorkflowStore.get_workflow")
+@patch("src.routes.workflows.WorkflowStore.get_workflow")
 def test_run_route_workflow_with_invalid_definition(
     mock_get_workflow, client, db_session, test_app
 ):
@@ -31,7 +31,7 @@ def test_run_route_workflow_with_invalid_definition(
 
 
 @pytest.mark.parametrize("test_app", ["NO_AUTH"], indirect=True)
-@patch("keep.api.routes.workflows.WorkflowStore.get_workflow")
+@patch("src.routes.workflows.WorkflowStore.get_workflow")
 def test_run_route_not_existing_workflow(
     mock_get_workflow, client, db_session, test_app
 ):

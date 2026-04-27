@@ -9,10 +9,11 @@ from src.workflowmanager.workflowscheduler import WorkflowScheduler
 
 
 @pytest.fixture
-def workflow_manager():
+def workflow_manager(db_session):
     """
     Fixture to create and manage a WorkflowManager instance.
     """
+    WorkflowManager._instance = None
     manager = None
     try:
         scheduler = WorkflowScheduler(None)
@@ -30,6 +31,7 @@ def workflow_manager():
             time.sleep(1)
         except Exception as e:
             print(f"Error stopping workflow manager: {e}")
+    WorkflowManager._instance = None
 
 
 def wait_for_workflow_execution(

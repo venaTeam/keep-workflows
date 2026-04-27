@@ -16,11 +16,14 @@ COPY pyproject.toml poetry.lock* ./
 
 # Install dependencies (no dev deps in production)
 RUN poetry config virtualenvs.create false \
-    && poetry install --no-interaction --no-ansi --without dev
+    && poetry install --no-interaction --no-ansi --without dev --no-root
 
 # Copy application code
 COPY src/ ./src/
 COPY examples/ ./examples/
+
+# Install the current project
+RUN poetry install --no-interaction --no-ansi --without dev
 
 # Expose port
 EXPOSE 8080

@@ -571,6 +571,12 @@ class ProvidersFactory:
         provider_from_db = get_provider_by_type_and_id(
             tenant_id=tenant_id, provider_id=provider_id, provider_type=provider_type
         )
+        if not provider_from_db:
+            logger.warning(
+                f"Provider {provider_type} with id {provider_id} not found in DB,"
+                " returning empty config"
+            )
+            return {}
         logger.info(
             f"Getting provider secret for provider id: {provider_from_db.id},"
             f" configuration key: {provider_from_db.configuration_key},"
