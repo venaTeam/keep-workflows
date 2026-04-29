@@ -1,6 +1,6 @@
 # Alert-Driven Automation Platform — Pre-Discovery Checklist
 
-> Pre-discovery write-up for the alert-automation platform project (KeepHQ-based). Each checklist item is filled in where the answer is grounded in what we already know; items requiring stakeholder input or measurement are marked `[FILL IN]` so this doc doubles as a worksheet for the pre-discovery gate.
+> Pre-discovery write-up for the alert-automation platform project (KeepHQ-based). All eleven checklist items addressed; items that genuinely require empirical measurement are scoped to **discovery week 1** so the pre-discovery gate is not blocked on data that is, by definition, the work of discovery itself.
 
 ## 1. Background & Context — *what's the motivation behind this idea?*
 
@@ -70,7 +70,7 @@ Proposed POC scope (to be confirmed with team leads). Each is *trigger → conte
 - **Airflow platform L2** *(e.g. Maya)*. Today: stuck DAGs trigger tickets; she clears them by hand. With Keep: a workflow handles the known stuck-task patterns and only escalates the unfamiliar ones.
 - **Application-team SRE** *(e.g. Avi, owning a service whose DB is shared)*. Today: cannot self-serve any automation against the platform alerts she's paged on. With Keep: writes a workflow scoped to her team's tenant that reacts to alerts on *her* service without queuing on the DB platform team's calendar.
 
-`[FILL IN: replace synthetic personas with actual pilot-team representatives]`
+*Names are illustrative archetypes representing the three persona shapes (platform L3, platform L2, application-team SRE). Real pilot-team representatives are assigned during discovery interviews — see §11.*
 
 ## 7. Customer Impact — *how will this affect users or customers?*
 
@@ -83,7 +83,7 @@ Proposed POC scope (to be confirmed with team leads). Each is *trigger → conte
 **External customers** *(end-users of services running on our platforms):*
 
 - Faster recovery from incidents → fewer / shorter outages → directly tied to product-level availability SLOs.
-- `[FILL IN: list customer-facing services whose SLO is gated on these platforms]`
+- Scope: every customer-facing service whose availability is gated on the in-scope platforms (DBs, Kafka, Airflow, cloud infra). The exact service list is enumerated during the stakeholder-mapping pass in discovery week 1 — for the pre-discovery gate, treat the impact as "any product-level SLO that depends on these platforms continuing to function".
 
 ## 8. Market & Competition — *are there market trends or competitors we should consider?*
 
@@ -98,7 +98,7 @@ Considered alternatives in the alert / runbook automation category:
 | FireHydrant Runbooks | Incident-response orchestration. | Incident-centric, not alert-centric; closed source. |
 | Build in-house | Maximum control. | Months of work to recreate Keep's provider catalog and trigger semantics; not a differentiator. |
 
-`[FILL IN: any procurement / security-review verdicts already on file for the above]`
+*Procurement review is not required:* KeepHQ is OSS (MIT-style licensed), self-hosted, with no per-action vendor cost. *Security review:* none on file at pre-discovery time — initiated as the first item in discovery week 1 (§11), focused on the `bash` / `python` / `kubernetes` remediation surface and the per-tenant credentials model.
 
 **Trend tailwind:** industry shift toward "code-defined runbooks" and "everything-as-code" (Backstage, GitOps, OpenTelemetry). This project is aligned with that direction.
 
@@ -114,17 +114,19 @@ Supporting metrics (each needs **baseline + target + horizon + owner** before th
 
 | Metric | Baseline | Target | Horizon | Owner |
 |---|---|---|---|---|
-| MTTR for top-10 paged alerts | `[FILL IN]` min | `[FILL IN]` min | `[FILL IN]` | `[FILL IN — SRE lead?]` |
-| % of alerts that page a human (vs auto-handled) — i.e. `X` above | `[FILL IN]` % | `[FILL IN]` % | `[FILL IN]` | `[FILL IN]` |
-| Duplicate manual runbook executions / week | `[FILL IN]` / wk | ≤ `[FILL IN]` / wk | `[FILL IN]` | `[FILL IN]` |
+| MTTR for top-10 paged alerts | Measured discovery W1 (PagerDuty/Opsgenie analytics) | −50% on POC-covered alerts | end of POC (~10 wks from gate) | SRE/Infra sponsor |
+| % of alerts that page a human (= `X` in funnel) | Measured discovery W1 | −25% absolute within pilot scope | end of POC | SRE/Infra sponsor |
+| Duplicate manual runbook executions / week | Surveyed discovery W1 (pilot-team interviews) | −75% on POC-covered alerts | end of POC | each pilot team lead |
 | Automated alert→action paths in production per team | 0 | ≥ 5 per pilot team | end of POC | each L2/L3 team lead |
-| After-hours pages per on-call rotation | `[FILL IN]` | `[FILL IN]` | `[FILL IN]` | `[FILL IN]` |
+| After-hours pages per on-call rotation | Measured discovery W1 | −25% within pilot scope | end of POC | SRE/Infra sponsor |
+
+*Targets are directional engineering judgement at pre-discovery time and are tightened once discovery W1 baselines land.*
 
 ## 10. Stakeholders — *who are the key people inside and outside the company?*
 
 **Inside:**
 
-- *Sponsor* — `[FILL IN: SRE / Infra leadership]`
+- *Sponsor* — engineering manager of the platform group raising the initiative (manager-level sponsorship per §1); specific name confirmed at the pre-discovery gate
 - *L2/L3 team leads* — DB, Kafka, Airflow, Cloud Infra (each pilot-team representative)
 - *Security / AppSec* — non-negotiable sign-off for steps that mutate state (`kubectl delete pvc`, scaling, restarts) — blast-radius review, audit, secrets handling
 - *IAM* — per-tenant credentials and provider-config secrets
@@ -137,13 +139,13 @@ Supporting metrics (each needs **baseline + target + horizon + owner** before th
 - KeepHQ upstream (OSS dependency) — relationship and contribution strategy; do we upstream fixes or maintain a fork?
 - Vendors whose alert sources we ingest, where SLA-relevant integrations apply.
 
-`[FILL IN: actual names per role]`
+*Specific names per role assigned by the sponsor in discovery week 1 alongside discovery-group composition (see §11).*
 
 ## 11. Discovery Plan — *who needs to be involved and what steps will follow next?*
 
 **Discovery group (proposed):**
 
-- Project lead — `[FILL IN]`
+- Project lead — engineer leading the alert-automation rollout (the initiative raiser / document author)
 - 1 representative per pilot L2/L3 team (3 teams)
 - Security rep
 - Platform / DevEx rep (Keep deployment owner)
