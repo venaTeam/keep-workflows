@@ -9,8 +9,8 @@ Our L2/L3 platform teams (DBs, Kafka, Airflow, cloud infrastructure) and the app
 *Why now:*
 
 - KeepHQ deployment and integration into our infra is already underway (current branch ships v0.50.0).
-- `[FILL IN]` Recent trend in alert volume / paging frequency that triggered the initiative.
-- `[FILL IN]` Strategic context — does this slot under an SRE / Reliability OKR for the year?
+- **Alert volume.** Our alerting pipeline ingests roughly **4,000 alerts/minute** (~240K/hour, ~5.7M/day). At this volume, manual triage is structurally infeasible — there is no headcount answer. Encoding the existing manual runbooks as automated workflows is the only realistic path to keep up; the human-paging slice and the top-N contributing alert classes are quantified during discovery (see §4).
+- **Strategic alignment.** Bottom-up initiative raised by the platform group, with manager-level sponsorship in place. Not currently mapped to a top-level SRE/Reliability OKR; ladders into the org's operational-excellence themes — reducing on-call toil, codifying tribal knowledge, and unblocking application teams from platform-team capacity. Formal OKR placement is itself a discovery deliverable: either propose this as a contributor to an existing reliability OKR or stand up a dedicated key result.
 
 ## 2. Problem & Pain Points — *what specific problems are we solving?*
 
@@ -41,9 +41,13 @@ Our L2/L3 platform teams (DBs, Kafka, Airflow, cloud infrastructure) and the app
 
 ## 4. Supporting Data — *what evidence suggests this is valuable?*
 
-`[FILL IN — needs measurement and / or a pull from existing tooling. Suggested baseline:]`
+**Known today:**
 
-- Current alert volume per team per week (Datadog / Prometheus).
+- **Alerting-pipeline ingest rate: ~4,000 alerts/minute** (~240K/hour, ~5.7M/day) across the platforms in scope. This volume alone defeats any human-triage strategy and is the load-bearing fact for the project.
+
+**To be measured during discovery:**
+
+- The human-paging slice of the 4K/min figure (post-dedup, post-correlation, post-routing) — this is the slice workflows actually act on.
 - MTTR distribution for the top-10 most-paged alert classes.
 - Count and inventory of existing wiki runbooks per L2/L3 team.
 - % of alerts that page a human vs. resolve automatically today.
