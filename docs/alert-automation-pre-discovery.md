@@ -104,12 +104,18 @@ Considered alternatives in the alert / runbook automation category:
 
 ## 9. Key Metrics / OKRs — *what measurable outcomes might improve?*
 
-Each metric needs **baseline + target + horizon + owner** before the pre-discovery gate.
+**Top-line funnel** *(the project's headline metric):*
+
+> **4,000 alerts/min ingested** → `X%` route to a human after dedup/correlation → `Y%` of those have a documented manual runbook → today, **0%** are auto-resolved by Keep.
+>
+> *Target:* by `[horizon]`, `Z%` of the `Y`-slice end-to-end auto-resolved without paging a human. `X` and `Y` are discovery deliverables; the headline OKR is the `Z`.
+
+Supporting metrics (each needs **baseline + target + horizon + owner** before the pre-discovery gate):
 
 | Metric | Baseline | Target | Horizon | Owner |
 |---|---|---|---|---|
 | MTTR for top-10 paged alerts | `[FILL IN]` min | `[FILL IN]` min | `[FILL IN]` | `[FILL IN — SRE lead?]` |
-| % of alerts that page a human (vs auto-handled) | `[FILL IN]` % | `[FILL IN]` % | `[FILL IN]` | `[FILL IN]` |
+| % of alerts that page a human (vs auto-handled) — i.e. `X` above | `[FILL IN]` % | `[FILL IN]` % | `[FILL IN]` | `[FILL IN]` |
 | Duplicate manual runbook executions / week | `[FILL IN]` / wk | ≤ `[FILL IN]` / wk | `[FILL IN]` | `[FILL IN]` |
 | Automated alert→action paths in production per team | 0 | ≥ 5 per pilot team | end of POC | each L2/L3 team lead |
 | After-hours pages per on-call rotation | `[FILL IN]` | `[FILL IN]` | `[FILL IN]` | `[FILL IN]` |
