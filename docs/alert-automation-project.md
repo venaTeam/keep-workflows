@@ -6,6 +6,8 @@
 
 Every time an alert fires on one of our shared platforms — a database, a Kafka cluster, an Airflow scheduler, anything in the cloud infra stack — an L2/L3 engineer has to manually triage it: pull context from three dashboards, cross-reference a wiki runbook, open a ticket, ping the right channel, maybe restart a pod or scale a consumer group. The runbooks live as prose in wikis, not as code. Engineers paged at 03:00 rediscover the same playbook for the seventh time. Mean-time-to-remediate is dominated by glue work, not by diagnosis. Alert fatigue grows, the on-call rotation burns out, and avoidable downtime reaches the business. The application teams that depend on these platforms have no self-service way to react to alerts that affect them — every change is gated on the platform team's calendar.
 
+Crucially, our runbooks are **not** "send a notification and wait for a human". They almost always end with a real remediation action: scale a Deployment up or down, restart a Pod, delete or clean a PVC that has filled up, drain or rebalance a Kafka consumer group, run a maintenance script. Today that final step happens by hand — an engineer with a `kubectl` shell open at 03:00 — which is precisely the work we want the platform to take over.
+
 ## The goal
 
 Give every L2/L3 team — and the application teams downstream of them — a self-service, low-code way to author automations that run automatically the moment a matching alert arrives. The engineer who owns the alert should own its runbook, expressed as version-controlled code, observable, auditable, and shared across the org.
@@ -29,13 +31,15 @@ Each team writes its automations as a declarative YAML *workflow* with three par
 
 60+ provider integrations ship out-of-the-box, so a typical workflow is ~30 lines of YAML — authorable by anyone on an L2/L3 team without writing Python. Multi-tenancy, throttling, retries, severity-change and on-change gates, and per-execution audit trails let teams roll automations out incrementally: start with a Slack notification, graduate to ticket creation, eventually close the loop with remediation.
 
+**Closed-loop remediation is a hard requirement, not a future aspiration.** Workflows can run arbitrary `bash` and `python` for scripted recovery, and use the Kubernetes provider to scale Deployments, restart Pods, delete or clean PVCs, evict workloads, etc. — the same actions an L2/L3 engineer types into a terminal at 03:00, encoded once per alert and run automatically thereafter. The same workflow can chain "fetch context → make a decision → take the action → notify the channel → open a ticket" in a single declarative definition.
+
 ## Architecture note: should Keep transpile workflows to Argo / Airflow DAGs?
 
 A reasonable proposal is to keep Keep as the authoring surface — YAML, CEL triggers, provider catalog, alert ingestion — but at runtime translate each workflow into an Argo `Workflow` (one container per step) or an Airflow DAG (one operator per step) and let those engines execute. The pull is real: Keep's runtime today is a single-node thread-pool with an in-memory queue, and Argo/Airflow are distributed by design with mature isolation, retry and UI.
 
 We do not recommend it as the v1 default, for three reasons. **(1) Latency on the dominant case.** ~90% of alert workflows are "post a Slack message, maybe call one HTTP endpoint, optionally open a ticket" — sub-second end-to-end. An Argo container-per-step adds a 5–15 s pod-startup tax we would inherit on every alert; an Airflow operator pays a scheduler tick. We would degrade the headline alert-to-action latency by an order of magnitude to buy scale we do not yet need. **(2) Keep stays on the front anyway.** Argo is submit-and-wait batch; Airflow is interval-scheduled. Neither has a native "match this CEL against every incoming alert and fan out workflows" model — so Keep would still own ingestion, CEL matching, dedup, severity-changed/only-on-change gating and fingerprint dedup, and would RPC into Argo/Airflow per match. We add a network hop without removing complexity. **(3) The scale path is already here.** Keep ships ARQ (Redis-backed distributed queue) plumbing in `src/common/arq_pool.py` and the ingestion path; horizontal scale is a configuration flip, not a re-platform.
 
-Where the idea does pay off is the **hybrid escape hatch**: some workflows have legitimately heavy steps (multi-minute backfills, ETL kick-offs, multi-stage remediation needing container isolation). For those, an individual step declares `executor: argo` and Keep dispatches just that step to Argo and awaits completion. Small, well-scoped extension — one new provider/executor adapter — versus a re-platform.
+Where the idea does pay off is the **hybrid escape hatch**: some workflows have legitimately heavy steps (multi-minute backfills, ETL kick-offs, multi-stage remediation needing container isolation). It also pays off for **destructive remediation** — a step that runs `kubectl delete pvc` or arbitrary `bash`/`python` is, today, executed inside the Keep process, which means Keep needs the blast-radius credentials of every team it serves. Routing those specific steps through a sandboxed per-step Argo container gives us proper isolation, per-team RBAC and a stronger audit boundary. For both cases, an individual step declares `executor: argo` and Keep dispatches just that step to Argo and awaits completion. Small, well-scoped extension — one new provider/executor adapter — versus a re-platform.
 
 Recommendation: ship on Keep's engine for v1; enable Keep's built-in ARQ distribution if/when load demands it; add an Argo step-executor as a hybrid escape hatch once at least one team has a concrete heavy-step need. Defer any full transpilation work until we have data on workflow shape, QPS and step durations across teams.
 
@@ -69,6 +73,8 @@ Per-workflow `strategy` enum: `parallel | nonparallel | nonparallel_with_retry`,
 
 Catalog under `src/providers/`: Slack, ServiceNow, PagerDuty, Datadog, Prometheus, Grafana, Elastic, Jira, YouTrack, Kubernetes, HTTP, bash, python, postgres, etc. Each is a `BaseProvider` subclass exposing `query()` and/or `notify()`.
 
+The remediation surface for our use case is the combination of **`bash`**, **`python`** and **`kubernetes`** providers. The Python provider (`src/providers/python_provider/python_provider.py`) `eval`s a single expression with selectable imports and returns its value as the step result; multi-statement scripts go through the bash provider; and the Kubernetes provider exposes the `kubectl`-equivalent verbs (scale, restart, delete, evict) that the on-call engineer would otherwise type by hand. Per-tenant credentials are wired through the standard provider config, so a workflow's blast radius is the credentials its team's provider was given.
+
 ### Persistence and observability
 
 `WorkflowExecution` table stores status, trigger source (`alert:<fingerprint>`, `interval`, `manually by ...`), duration, results JSON, error message and revision. `WorkflowExecutionLog` streams per-execution log lines. Prometheus metrics for execution duration, errors, queue size and running workers.
@@ -100,3 +106,4 @@ The clarified architectural question is whether Keep should transpile each workf
 - What is our current Argo/Airflow operational footprint, and is one of them a sunk cost we should leverage?
 - What mix of fast (<1 s) vs heavy (>30 s) workflows do we expect once L2/L3 teams are onboarded?
 - Are there compliance constraints requiring all automated actions to flow through a particular orchestration plane?
+- What blast-radius and approval controls do we need around destructive remediation (e.g. `kubectl delete pvc`) — manual approval gate, dry-run mode, audit-only first phase, per-team scoped credentials, sandboxed-per-step execution?
