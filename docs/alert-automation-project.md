@@ -29,13 +29,15 @@ Each team writes its automations as a declarative YAML *workflow* with three par
 
 60+ provider integrations ship out-of-the-box, so a typical workflow is ~30 lines of YAML — authorable by anyone on an L2/L3 team without writing Python. Multi-tenancy, throttling, retries, severity-change and on-change gates, and per-execution audit trails let teams roll automations out incrementally: start with a Slack notification, graduate to ticket creation, eventually close the loop with remediation.
 
-## Architecture note: why we are not refactoring to Argo Workflows or Airflow
+## Architecture note: should Keep transpile workflows to Argo / Airflow DAGs?
 
-Keep's runtime today is a single-node thread-pool scheduler with an in-memory queue, polled every second. It already ships with the plumbing for a distributed Redis-backed queue (ARQ); the path to horizontal scale is a configuration flip, not a re-platform.
+A reasonable proposal is to keep Keep as the authoring surface — YAML, CEL triggers, provider catalog, alert ingestion — but at runtime translate each workflow into an Argo `Workflow` (one container per step) or an Airflow DAG (one operator per step) and let those engines execute. The pull is real: Keep's runtime today is a single-node thread-pool with an in-memory queue, and Argo/Airflow are distributed by design with mature isolation, retry and UI.
 
-A move to **Argo Workflows** (K8s, container-per-step, designed for ML/batch DAGs) or **Airflow** (Python DAGs, scheduled batch orchestration) would cost us the entire value proposition — the 60+ alert/notification providers, the alert→workflow CEL matching, the dedup/enrichment/severity-change semantics, and the low-code YAML authoring experience our L2/L3 audience needs.
+We do not recommend it as the v1 default, for three reasons. **(1) Latency on the dominant case.** ~90% of alert workflows are "post a Slack message, maybe call one HTTP endpoint, optionally open a ticket" — sub-second end-to-end. An Argo container-per-step adds a 5–15 s pod-startup tax we would inherit on every alert; an Airflow operator pays a scheduler tick. We would degrade the headline alert-to-action latency by an order of magnitude to buy scale we do not yet need. **(2) Keep stays on the front anyway.** Argo is submit-and-wait batch; Airflow is interval-scheduled. Neither has a native "match this CEL against every incoming alert and fan out workflows" model — so Keep would still own ingestion, CEL matching, dedup, severity-changed/only-on-change gating and fingerprint dedup, and would RPC into Argo/Airflow per match. We add a network hop without removing complexity. **(3) The scale path is already here.** Keep ships ARQ (Redis-backed distributed queue) plumbing in `src/common/arq_pool.py` and the ingestion path; horizontal scale is a configuration flip, not a re-platform.
 
-We will ship on Keep's existing engine and address scale by enabling its built-in distributed mode if and when load demands it.
+Where the idea does pay off is the **hybrid escape hatch**: some workflows have legitimately heavy steps (multi-minute backfills, ETL kick-offs, multi-stage remediation needing container isolation). For those, an individual step declares `executor: argo` and Keep dispatches just that step to Argo and awaits completion. Small, well-scoped extension — one new provider/executor adapter — versus a re-platform.
+
+Recommendation: ship on Keep's engine for v1; enable Keep's built-in ARQ distribution if/when load demands it; add an Argo step-executor as a hybrid escape hatch once at least one team has a concrete heavy-step need. Defer any full transpilation work until we have data on workflow shape, QPS and step durations across teams.
 
 ---
 
@@ -75,10 +77,26 @@ Catalog under `src/providers/`: Slack, ServiceNow, PagerDuty, Datadog, Prometheu
 
 `src/rulesengine/rulesengine.py` is a separate concern: CEL-based alert correlation that groups alerts into incidents. Workflows can trigger on `incident` as well as `alert`, so the platform supports both per-alert reaction and incident-level orchestration.
 
-### Comparison summary
+### Deeper analysis: Keep-as-authoring-surface, Argo/Airflow-as-executor
 
-| Option | Fit |
+The clarified architectural question is whether Keep should transpile each workflow at runtime into an Argo `Workflow` or an Airflow DAG. Beyond the three top-level reasons in the half-page note, four further frictions matter:
+
+- **Provider model mismatch.** Keep providers are Python classes with `query()`/`notify()` methods sharing an in-process `ContextManager` that carries alert payload, step results, enrichments, aliases, consts and `foreach` iterators across steps. Argo passes step outputs as parameters/artifacts (size-bounded); Airflow passes via XCom (Postgres-backed, also size-bounded). A faithful transpile means either packaging every provider as a container image (per-pod cold start) or building an Operator-per-provider adapter layer.
+- **Throttles, dedup and enrichment are Keep-native.** `WorkflowToAlertExecution` fingerprint dedup, `one-until-resolved` throttles and `enrich_alert` side-effects are tightly coupled to Keep's persistence. Either Keep retains them on the front and the executor only runs the step body, or we duplicate them outside.
+- **Authoring/debug UX regression.** Today, debugging a failed automation means looking at the Keep execution log with the alert payload and step results inline. After transpiling, users land in the Argo or Airflow UI with container logs but no alert/enrichment context — unless we build a join-back layer.
+- **Maintenance tracks upstream.** Every Keep feature (new condition type, new throttle, new trigger semantic) needs a corresponding translation rule. Permanent chase of upstream surface area.
+
+### Option comparison
+
+| Option | Trade-off |
 |---|---|
-| **Keep (current)** | Purpose-built for alert-driven automation. YAML + provider catalog is the right authoring surface for L2/L3. Multi-tenant, dedup, enrichment and CEL matching are first-class. Scale path = enable existing ARQ distribution, not re-platform. |
-| **Argo Workflows** | K8s-native, container-per-step, designed for ML/batch DAGs. Heavy for "post a Slack message", no alert ingestion or provider catalog, authoring requires manifests. Would force us to rebuild Keep's value prop on top. |
-| **Airflow** | Python DAGs (not low-code), scheduled batch orchestration model, not reactive sub-second. Wrong audience and wrong workload shape. |
+| **Keep alone (current)** | Sub-second alert-to-action latency. Full provider catalog, multi-tenant, dedup/enrichment first-class. Single-node executor today; scale path via Keep's built-in ARQ distribution (not yet enabled). |
+| **Keep → Argo transpile** | Container-per-step adds 5–15 s pod-startup latency on every alert. Output passing via parameters/artifacts is size-bounded. Provider catalog must be repackaged as container images; transpiler maintenance tracks upstream Keep. |
+| **Keep → Airflow transpile** | Operator-per-step requires an adapter layer for the provider catalog. XCom for state passing is size-bounded. Airflow's interval-scheduled model fits alert-reactive workloads poorly. |
+| **Hybrid: Keep + per-step Argo executor** *(recommended escape hatch)* | Keep owns the fast path; individual heavy steps opt in via `executor: argo` and dispatch to Argo. Small, well-scoped extension; pay container cost only where it earns it. |
+
+### Open questions worth validating before any executor decision
+
+- What is our current Argo/Airflow operational footprint, and is one of them a sunk cost we should leverage?
+- What mix of fast (<1 s) vs heavy (>30 s) workflows do we expect once L2/L3 teams are onboarded?
+- Are there compliance constraints requiring all automated actions to flow through a particular orchestration plane?
