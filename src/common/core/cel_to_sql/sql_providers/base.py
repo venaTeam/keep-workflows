@@ -562,11 +562,21 @@ class BaseCelToSqlProvider:
         self, multiple_fields_node: MultipleFieldsNode, cast_to: DataType, stack
     ) -> str:
         coalesce_args = []
+        # Check if there's a mix of JSON and simple fields - if so, simple fields
+        # need to be cast to TEXT to match JSON ->> text extraction for COALESCE compatibility
+        has_json_field = any(
+            isinstance(item, JsonPropertyAccessNode)
+            for item in multiple_fields_node.fields
+        )
 
         for item in multiple_fields_node.fields:
             arg = self._visit_property_access_node(item, stack)
             if isinstance(item, JsonPropertyAccessNode) and cast_to:
                 arg = self.cast(arg, cast_to)
+            elif has_json_field and not isinstance(item, JsonPropertyAccessNode):
+                # Cast simple fields to TEXT when mixed with JSON fields
+                # to avoid PostgreSQL COALESCE type mismatch errors
+                arg = f"CAST({arg} AS TEXT)"
             coalesce_args.append(arg)
 
         if len(coalesce_args) == 1:

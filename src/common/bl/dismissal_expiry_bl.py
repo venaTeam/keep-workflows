@@ -271,7 +271,9 @@ class DismissalExpiryBl:
 
                     if latest_alert:
                         # Create AlertDto with updated enrichments
-                        alert_data = latest_alert.event.copy()
+                        alert_data = latest_alert.dict()
+                        if latest_alert.extra_data:
+                            alert_data.update(latest_alert.extra_data)
 
                         # Only update specific enrichment fields, don't override alert event data with None values
                         enrichment_fields = [

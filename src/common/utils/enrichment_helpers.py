@@ -210,14 +210,17 @@ def convert_db_alerts_to_dto_alerts(
                 elif alert.alert_enrichment and not with_alert_instance_enrichment:
                     enrichments = alert.alert_enrichment.enrichments
 
-                alert.event.update(enrichments)
+                alert_payload = alert.dict()
+                if alert.extra_data:
+                    alert_payload.update(alert.extra_data)
+                alert_payload.update(enrichments)
 
                 if with_incidents:
                     if alert._incidents:
-                        alert.event["incident"] = ",".join(
+                        alert_payload["incident"] = ",".join(
                             str(incident.id) for incident in alert._incidents
                         )
-                        alert.event["incident_dto"] = [
+                        alert_payload["incident_dto"] = [
                             IncidentDto.from_db_incident(incident)
                             for incident in alert._incidents
                         ]
@@ -227,7 +230,7 @@ def convert_db_alerts_to_dto_alerts(
                             alert, alert_to_incident
                         )
                     else:
-                        alert_dto = AlertDto(**alert.event)
+                        alert_dto = AlertDto(**alert_payload)
 
                     if enrichments:
                         parse_and_enrich_deleted_and_assignees(alert_dto, enrichments)

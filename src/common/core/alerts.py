@@ -95,68 +95,60 @@ alert_field_configurations = [
         ],
         data_type=DataType.STRING,
     ),
-    FieldMappingConfiguration(
-        map_from_pattern="severity",
-        map_to=[
-            "JSON(alertenrichment.enrichments).*",
-            "JSON(alert.event).*",
-        ],
-        enum_values=[
+]
+
+_INFRA_COLUMNS = {
+    "id", "tenant_id", "timestamp", "provider_type", "provider_id",
+    "fingerprint", "alert_hash", "extra_data"
+}
+
+_SPECIAL_FIELDS = {
+    "severity": {
+        "data_type": DataType.STRING,
+        "enum_values": [
             severity.value
             for severity in sorted(
                 [severity for _, severity in enumerate(AlertSeverity)],
                 key=lambda s: s.order,
             )
         ],
-        data_type=DataType.STRING,
-    ),
-    FieldMappingConfiguration(
-        map_from_pattern="lastReceived",
-        map_to=[
-            "JSON(alertenrichment.enrichments).*",
-            "JSON(alert.event).*",
-        ],
-        data_type=DataType.DATETIME,
-    ),
-    FieldMappingConfiguration(
-        map_from_pattern="status",
-        map_to=[
-            "JSON(alertenrichment.enrichments).*",
-            "JSON(alert.event).*",
-        ],
-        enum_values=list(reversed([item.value for _, item in enumerate(AlertStatus)])),
-        data_type=DataType.STRING,
-    ),
-    FieldMappingConfiguration(
-        map_from_pattern="dismissed",
-        map_to=["JSON(alertenrichment.enrichments).*"],
-        data_type=DataType.BOOLEAN,
-    ),
-    FieldMappingConfiguration(
-        map_from_pattern="firingCounter",
-        map_to=[
-            "JSON(alertenrichment.enrichments).*",
-            "JSON(alert.event).*",
-        ],
-        data_type=DataType.INTEGER,
-    ),
-    FieldMappingConfiguration(
-        map_from_pattern="unresolvedCounter",
-        map_to=[
-            "JSON(alertenrichment.enrichments).*",
-            "JSON(alert.event).*",
-        ],
-        data_type=DataType.INTEGER,
-    ),
+    },
+    "status": {
+        "data_type": DataType.STRING,
+        "enum_values": list(reversed([item.value for _, item in enumerate(AlertStatus)])),
+    },
+    "lastReceived": {"data_type": DataType.DATETIME},
+    "dismissed": {"data_type": DataType.BOOLEAN},
+    "firingCounter": {"data_type": DataType.INTEGER},
+    "unresolvedCounter": {"data_type": DataType.INTEGER},
+}
+
+for col in Alert.__table__.columns:
+    if col.name in _INFRA_COLUMNS:
+        continue
+    special = _SPECIAL_FIELDS.get(col.name, {})
+    alert_field_configurations.append(
+        FieldMappingConfiguration(
+            map_from_pattern=col.name,
+            map_to=[
+                "JSON(alertenrichment.enrichments).*",
+                f"alert.{col.name}",
+            ],
+            data_type=special.get("data_type", DataType.STRING),
+            enum_values=special.get("enum_values"),
+        )
+    )
+
+alert_field_configurations.append(
     FieldMappingConfiguration(
         map_from_pattern="*",
         map_to=[
             "JSON(alertenrichment.enrichments).*",
-            "JSON(alert.event).*",
+            "JSON(alert.extra_data).*",
         ],
         data_type=DataType.STRING,
-    ),
-]
+    )
+)
 
 # Copies the same configuration as above, but adds the "alert." prefix to each entry in map_from_pattern.
 # This allows users to write queries using dictionary-style field access, like:
@@ -431,11 +423,8 @@ def query_last_alerts(tenant_id, query: QueryDto) -> Tuple[list[Alert], int]:
         for alert_data in alerts_with_start:
             alert: Alert = alert_data[0]
             alert.alert_enrichment = alert_data[1]
-            if not alert.event.get("startedAt"):
-                alert.event["startedAt"] = str(alert_data[2])
-            else:
-                alert.event["firstTimestamp"] = str(alert_data[2])
-            alert.event["event_id"] = str(alert.id)
+            if not alert.startedAt:
+                alert.startedAt = str(alert_data[2])
             alerts.append(alert)
 
         return alerts, total_count

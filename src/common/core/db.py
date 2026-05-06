@@ -1913,11 +1913,8 @@ def get_last_alerts(
         for alert_data in alerts_with_start:
             alert = alert_data[0]
             startedAt = alert_data[1]
-            if not alert.event.get("startedAt"):
-                alert.event["startedAt"] = str(startedAt)
-            else:
-                alert.event["firstTimestamp"] = str(startedAt)
-            alert.event["event_id"] = str(alert.id)
+            if not alert.startedAt:
+                alert.startedAt = str(startedAt)
 
             if with_incidents:
                 incident_id = alert_data[2]
@@ -1928,7 +1925,7 @@ def get_last_alerts(
                     # Split comma-separated string for MySQL and PostgreSQL
                     incident_id = incident_id.split(",")[0] if incident_id else None
 
-                alert.event["incident"] = str(incident_id) if incident_id else None
+                alert.incident = str(incident_id) if incident_id else None
 
             alerts.append(alert)
 
@@ -5781,15 +5778,17 @@ def set_maintenance_windows_trace(
     session: Optional[Session] = None,
 ):
     mw_id = str(maintenance_w.id)
-    if mw_id in alert.event.get("maintenance_windows_trace", []):
+    if not alert.extra_data:
+        alert.extra_data = {}
+    if mw_id in alert.extra_data.get("maintenance_windows_trace", []):
         return
     with existed_or_new_session(session) as session:
-        if "maintenance_windows_trace" in alert.event:
-            if mw_id not in alert.event["maintenance_windows_trace"]:
-                alert.event["maintenance_windows_trace"].append(mw_id)
+        if "maintenance_windows_trace" in alert.extra_data:
+            if mw_id not in alert.extra_data["maintenance_windows_trace"]:
+                alert.extra_data["maintenance_windows_trace"].append(mw_id)
         else:
-            alert.event["maintenance_windows_trace"] = [mw_id]
-        flag_modified(alert, "event")
+            alert.extra_data["maintenance_windows_trace"] = [mw_id]
+        flag_modified(alert, "extra_data")
         session.add(alert)
         session.commit()
 
@@ -5963,12 +5962,14 @@ def recover_prev_alert_status(alert: Alert, session: Optional[Session] = None):
     """
     with existed_or_new_session(session) as session:
         try:
-            status = alert.event.get("status")
-            prev_status = alert.event.get("previous_status")
-            alert.event["status"] = prev_status
-            alert.event["previous_status"] = status
+            status = alert.status
+            prev_status = alert.extra_data.get("previous_status") if alert.extra_data else None
+            alert.status = prev_status
+            if not alert.extra_data:
+                alert.extra_data = {}
+            alert.extra_data["previous_status"] = status
         except KeyError:
             logger.warning(f"Alert {alert.id} does not have previous status.")
-        query = update(Alert).where(Alert.id == alert.id).values(event=alert.event)
+        query = update(Alert).where(Alert.id == alert.id).values(status=alert.status, extra_data=alert.extra_data)
         session.exec(query)
         session.commit()

@@ -78,25 +78,15 @@ class AlertDto(BaseModel):
     firingStartTimeSinceLastResolved: str | None = None
     firingCounter: int = 0
     unresolvedCounter: int = 0
-    environment: str = "undefined"
     isFullDuplicate: bool | None = False
     isPartialDuplicate: bool | None = False
     duplicateReason: str | None = None
-    service: str | None = None
     source: list[str] | None = []
-    apiKeyRef: str | None = None
     message: str | None = None
     description: str | None = None
-    description_format: str | None = None  # Can be 'markdown' or 'html'
-    pushed: bool = False  # Whether the alert was pushed or pulled from the provider
-    event_id: str | None = None  # Database alert id
-    url: AnyHttpUrl | None = None
-    imageUrl: AnyHttpUrl | None = None
-    labels: dict | None = {}
     fingerprint: str | None = (
         None  # The fingerprint of the alert (used for alert de-duplication)
     )
-    deleted: bool = False  # @tal: Obselete field since we have dismissed, but kept for backwards compatibility
     dismissUntil: str | None = None  # The time until the alert is dismissed
     # DO NOT MOVE DISMISSED ABOVE dismissedUntil since it is used in root_validator
     dismissed: bool = False  # Whether the alert has been dismissed
@@ -107,7 +97,6 @@ class AlertDto(BaseModel):
     startedAt: str | None = (
         None  # The time the alert started - e.g. if alert triggered multiple times, it will be the time of the first trigger (calculated on querying)
     )
-    isNoisy: bool = False  # Whether the alert is noisy
 
     enriched_fields: list = []
     incident: str | None = None
@@ -143,27 +132,7 @@ class AlertDto(BaseModel):
     def assign_fingerprint_if_none(cls, fingerprint, values):
         return get_fingerprint(fingerprint, values)
 
-    @validator("deleted", pre=True, always=True)
-    def validate_deleted(cls, deleted, values):
-        if isinstance(deleted, bool):
-            return deleted
-        if isinstance(deleted, list):
-            return values.get("lastReceived") in deleted
 
-    @validator("url", pre=True)
-    def prepend_https(cls, url):
-        if not isinstance(url, str):
-            return url
-
-        url = url.strip()
-        # If the URL is empty, return None to avoid validation errors
-        if not url:
-            return None
-        if not url.startswith("http"):
-            # @tb: in some cases we drop the event because of invalid url with no scheme
-            # invalid or missing URL scheme (type=value_error.url.scheme)
-            url = f"https://{url}"
-        return urllib.parse.quote(url, safe="/:?=&")
 
     @validator("lastReceived", pre=True, always=True)
     def validate_last_received(cls, last_received):
@@ -230,14 +199,6 @@ class AlertDto(BaseModel):
         )
         return dismissed
 
-    @validator("description_format")
-    def validate_description_format(cls, description_format):
-        if description_format is None:
-            return None
-        valid_formats = ["markdown", "html"]
-        if description_format not in valid_formats:
-            raise ValueError(f"description_format must be one of {valid_formats}")
-        return description_format
 
     @root_validator(pre=True)
     def set_default_values(cls, values: Dict[str, Any]) -> Dict[str, Any]:
@@ -280,9 +241,18 @@ class AlertDto(BaseModel):
         assignees = values.pop("assignees", None)
         # In some cases (for example PagerDuty) the assignees is list of dicts and we don't handle it atm.
         if assignees and isinstance(assignees, dict):
-            dt = datetime.datetime.fromisoformat(lastReceived)
-            dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
-            assignee = assignees.get(lastReceived) or assignees.get(dt)
+            # Try exact match first
+            assignee = assignees.get(lastReceived)
+            if not assignee:
+                # Try normalized match
+                try:
+                    dt = datetime.datetime.fromisoformat(lastReceived.rstrip("Z"))
+                    normalized_dt = dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+                    if not normalized_dt.endswith("Z"):
+                        normalized_dt += "Z"
+                    assignee = assignees.get(normalized_dt)
+                except Exception:
+                    pass
             values["assignee"] = assignee
         values.pop("deletedAt", None)
         return values
@@ -306,21 +276,11 @@ class AlertDto(BaseModel):
                     "name": "Pod 'api-service-production' lacks memory",
                     "status": "firing",
                     "lastReceived": "2021-01-01T00:00:00.000Z",
-                    "environment": "production",
                     "duplicateReason": None,
-                    "service": "backend",
                     "source": ["prometheus"],
                     "message": "The pod 'api-service-production' lacks memory causing high error rate",
                     "description": "Due to the lack of memory, the pod 'api-service-production' is experiencing high error rate",
                     "severity": "critical",
-                    "pushed": True,
-                    "url": "https://www.keephq.dev?alertId=1234",
-                    "labels": {
-                        "pod": "api-service-production",
-                        "region": "us-east-1",
-                        "cpu": "88",
-                        "memory": "100Mi",
-                    },
                     "ticket_url": "https://www.keephq.dev?enrichedTicketId=456",
                     "fingerprint": "1234",
                 }

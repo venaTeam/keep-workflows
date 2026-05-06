@@ -114,10 +114,12 @@ class KeepProvider(BaseProvider):
                 for alert in db_alerts:
                     if fingerprints.get(alert.fingerprint) and distinct is True:
                         continue
-                    alert_event = alert.event
+                    alert_payload = alert.dict()
+                    if alert.extra_data:
+                        alert_payload.update(alert.extra_data)
                     if alert.alert_enrichment:
-                        alert_event["enrichments"] = alert.alert_enrichment.enrichments
-                    alerts.append(alert_event)
+                        alert_payload["enrichments"] = alert.alert_enrichment.enrichments
+                    alerts.append(alert_payload)
                     fingerprints[alert.fingerprint] = True
         else:
             search_engine = SearchEngine(tenant_id=self.context_manager.tenant_id)

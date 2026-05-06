@@ -336,31 +336,19 @@ def __save_to_db(
                     )
                     existing_alert = session.exec(query).first()
                     if existing_alert:
-                        # Update the event dict's lastReceived field
-                        if existing_alert.event:
-                            existing_alert.event["lastReceived"] = event.lastReceived
-                            # Mark the JSON field as modified so SQLAlchemy detects the change
-                            flag_modified(existing_alert, "event")
-                            session.add(existing_alert)
-                            session.flush()
-                            logger.debug(
-                                "Updated lastReceived for deduplicated alert",
-                                extra={
-                                    "tenant_id": tenant_id,
-                                    "fingerprint": event.fingerprint,
-                                    "alert_id": str(existing_alert.id),
-                                    "lastReceived": event.lastReceived,
-                                },
-                            )
-                        else:
-                            logger.warning(
-                                "Existing alert has no event dict",
-                                extra={
-                                    "tenant_id": tenant_id,
-                                    "fingerprint": event.fingerprint,
-                                    "alert_id": str(existing_alert.id),
-                                },
-                            )
+                        # Update the alert's lastReceived field
+                        existing_alert.lastReceived = event.lastReceived
+                        session.add(existing_alert)
+                        session.flush()
+                        logger.debug(
+                            "Updated lastReceived for deduplicated alert",
+                            extra={
+                                "tenant_id": tenant_id,
+                                "fingerprint": event.fingerprint,
+                                "alert_id": str(existing_alert.id),
+                                "lastReceived": event.lastReceived,
+                            },
+                        )
                     else:
                         logger.warning(
                             "No existing alert found to update lastReceived",
@@ -608,16 +596,80 @@ def __save_to_db(
                     else None,
                 },
             )
+            from src.common.models.db.alert import Alert
+            import json
+            
+            event_dict = formatted_event.dict()
+            extra_data = event_dict.pop("extra_data", {}) if "extra_data" in event_dict else {}
+            
             alert_args = {
                 "tenant_id": tenant_id,
                 "provider_type": (
                     provider_type if provider_type else formatted_event.source[0]
                 ),
-                "event": formatted_event.dict(),
                 "provider_id": provider_id,
                 "fingerprint": formatted_event.fingerprint,
                 "alert_hash": formatted_event.alert_hash,
             }
+            
+            # If it's an internal "keep" event (e.g. status update), inherit fields from the last alert
+            # to prevent resetting them to None/defaults
+            if provider_type == "keep" or (formatted_event.source and formatted_event.source[0] == "keep"):
+                from src.common.core.db.db import get_last_alert_by_fingerprint
+                last_alert = get_last_alert_by_fingerprint(tenant_id, formatted_event.fingerprint, session=session)
+                if last_alert:
+                    # Fetch the actual previous Alert object to inherit fields from
+                    previous_alert = session.get(Alert, last_alert.alert_id)
+                    if previous_alert:
+                        # Inherit core columns
+                        for field in Alert.__fields__:
+                            if field not in ["id", "timestamp", "tenant_id", "fingerprint", "extra_data"]:
+                                val = getattr(previous_alert, field)
+                                if val is not None:
+                                    alert_args[field] = val
+                        # Inherit extra_data
+                        if previous_alert.extra_data:
+                            # Combine inherited extra_data with new extra_data
+                            # new extra_data takes precedence
+                            extra_data = {**previous_alert.extra_data, **extra_data}
+
+            # Fields to ignore when populating extra_data or core columns
+            FIELDS_TO_IGNORE = {
+                "event_id", "firstTimestamp", "id", "providerId", "service", 
+                "imageUrl", "url", "description_format", "apiKeyRef", 
+                "grafana", "incident_dto", "environment", "labels", 
+                "pushed", "deleted", "isNoisy", "maintenance_windows_trace",
+                "ticket_url", "action_type", "action_callee", "action_description",
+                "audit_enabled", "force"
+            }
+            
+            for key, value in event_dict.items():
+                if key in ["tenant_id", "provider_type", "provider_id", "fingerprint", "alert_hash"] or key in FIELDS_TO_IGNORE:
+                    continue
+                
+                # Handle core columns
+                if key in Alert.__fields__:
+                    val_to_set = None
+                    if hasattr(value, "value"):
+                        val_to_set = value.value
+                    elif isinstance(value, (list, dict)) and key != "enriched_fields":
+                        val_to_set = json.dumps(value)
+                    else:
+                        val_to_set = value
+                    
+                    # Only set if not already set by inheritance, or if it's a meaningful update
+                    # (e.g. don't overwrite inherited name with "unknown alert name")
+                    if key == "name" and val_to_set == "unknown alert name" and alert_args.get("name"):
+                        continue
+                    
+                    if val_to_set is not None:
+                        alert_args[key] = val_to_set
+                
+                # Handle extra data
+                elif key not in ("fingerprint", "alert_hash"):
+                    extra_data[key] = value
+            
+            alert_args["extra_data"] = extra_data
             alert_args = sanitize_alert(alert_args)
             if timestamp_forced is not None:
                 alert_args["timestamp"] = timestamp_forced
@@ -907,7 +959,7 @@ def __save_to_db(
             session.expire_on_commit = False
             incident_bl = IncidentBl(tenant_id, session)
             for alert in saved_alerts:
-                if alert.event.get("status") == AlertStatus.RESOLVED.value:
+                if alert.status == AlertStatus.RESOLVED.value:
                     logger.debug(
                         "Checking for alert with status resolved",
                         extra={
@@ -1620,12 +1672,19 @@ def process_event(
                         },
                     )
                     try:
-                        event = provider_class.format_alert(
-                            tenant_id=tenant_id,
-                            event=event,
-                            provider_id=provider_id,
-                            provider_type=provider_type,
+                        is_internal_keep_event = (
+                            isinstance(event, dict) and 
+                            (event.get("source") == ["keep"] or event.get("provider_type") == "keep")
                         )
+                        if provider_class and not is_internal_keep_event:
+                            event = provider_class.format_alert(
+                                tenant_id=tenant_id,
+                                event=event,
+                                provider_id=provider_id,
+                                provider_type=provider_type,
+                            )
+                        # If it's an internal event, it's already "formatted" as a dict from the API/Kafka
+                        # but we still need to promote it to AlertDto later.
                         logger.debug(
                             "Single event formatted",
                             extra={
@@ -1689,7 +1748,26 @@ def process_event(
                     },
                 )
                 if not event.get("name"):
-                    event["name"] = event.get("id", "unknown alert name")
+                    # For internal keep events, try to inherit the name from the last alert
+                    # this prevents using UUID as name and generating duplicate alerts
+                    if provider_type == "keep" or event.get("provider_type") == "keep" or is_internal_keep_event:
+                        from src.common.core.db.db import get_last_alert_by_fingerprint
+                        from src.common.models.db.alert import Alert
+                        # Try to get fingerprint from event or extra_dict
+                        fp = fingerprint or event.get("fingerprint")
+                        last_alert = get_last_alert_by_fingerprint(tenant_id, fp, session=session)
+                        if last_alert:
+                            previous_alert = session.get(Alert, last_alert.alert_id)
+                            if previous_alert and previous_alert.name:
+                                event["name"] = previous_alert.name
+                            else:
+                                event["name"] = event.get("id", "unknown alert name")
+                        else:
+                            event["name"] = event.get("id", "unknown alert name")
+                    else:
+                        event["name"] = event.get("id", "unknown alert name")
+                if fingerprint and (is_internal_keep_event or "fingerprint" not in event):
+                    event["fingerprint"] = fingerprint
                 event = [AlertDto(**event)]
                 raw_event = [raw_event]
                 logger.debug(
