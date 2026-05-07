@@ -213,6 +213,9 @@ def convert_db_alerts_to_dto_alerts(
                 alert_payload = alert.dict()
                 # Ensure ID is a string for AlertDto
                 alert_payload["id"] = str(alert.id) if alert.id else None
+                # source is a list in AlertDto but a string in Alert (SQLModel)
+                if alert_payload.get("source") and isinstance(alert_payload["source"], str):
+                    alert_payload["source"] = [alert_payload["source"]]
                 if alert.extra_data:
                     alert_payload.update(alert.extra_data)
                 alert_payload.update(enrichments)

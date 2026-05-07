@@ -7,6 +7,7 @@ Mainly, it creates the database engine based on the environment variables.
 import json
 import logging
 import os
+from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, Optional, Tuple, Type, TypeVar
 
@@ -274,7 +275,10 @@ def custom_serialize(obj: Any) -> Any:
         return tuple(custom_serialize(item) for item in obj)
     elif isinstance(obj, BaseModel):
         # For Pydantic models like AlertDto
-        return obj.dict()
+        return custom_serialize(obj.dict())
+    elif isinstance(obj, datetime):
+        # For datetime objects
+        return obj.isoformat()
     elif isinstance(obj, Enum):
         # For enum values
         return obj.value

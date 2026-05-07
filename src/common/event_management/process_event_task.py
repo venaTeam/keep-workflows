@@ -615,7 +615,7 @@ def __save_to_db(
             # If it's an internal "keep" event (e.g. status update), inherit fields from the last alert
             # to prevent resetting them to None/defaults
             if provider_type == "keep" or (formatted_event.source and formatted_event.source[0] == "keep"):
-                from src.common.core.db.db import get_last_alert_by_fingerprint
+                from src.common.core.db import get_last_alert_by_fingerprint
                 last_alert = get_last_alert_by_fingerprint(tenant_id, formatted_event.fingerprint, session=session)
                 if last_alert:
                     # Fetch the actual previous Alert object to inherit fields from
