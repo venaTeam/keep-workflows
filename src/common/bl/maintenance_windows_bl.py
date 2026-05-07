@@ -297,8 +297,8 @@ class MaintenanceWindowsBl:
                     logger.exception(
                         "Failed to run workflows based on alerts",
                         extra={
-                            "provider_type": alert_dto.providerType,
-                            "provider_id": alert_dto.providerId,
+                            "provider_type": alert_dto.provider_type,
+                            "provider_id": alert_dto.provider_id,
                             "tenant_id": tenant,
                         },
                     )
@@ -315,8 +315,8 @@ class MaintenanceWindowsBl:
                         logger.exception(
                             "Failed to run rules engine",
                             extra={
-                                "provider_type": alert_dto.providerType,
-                                "provider_id": alert_dto.providerId,
+                                "provider_type": alert_dto.provider_type,
+                                "provider_id": alert_dto.provider_id,
                                 "tenant_id": tenant,
                             },
                         )
@@ -359,8 +359,8 @@ class MaintenanceWindowsBl:
                     logger.exception(
                         "Failed to send presets via SSE",
                         extra={
-                            "provider_type": alert_dto.providerType,
-                            "provider_id": alert_dto.providerId,
+                            "provider_type": alert_dto.provider_type,
+                            "provider_id": alert_dto.provider_id,
                             "tenant_id": tenant,
                         },
                     )

@@ -135,6 +135,7 @@ class Alert(SQLModel, table=True):
 
     # === Source 2: Appchi System Fields (5) ===
     source: str | None = Field(sa_column=Column(String(255), nullable=True))
+    service: str | None = Field(sa_column=Column(String(255), nullable=True))
     key_field: str | None = Field(sa_column=Column(String(255), nullable=True))
     name: str | None = Field(sa_column=Column(String(255), nullable=True))
     status: str | None = Field(sa_column=Column(String(50), nullable=True))

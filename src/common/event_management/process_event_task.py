@@ -711,7 +711,7 @@ def __save_to_db(
                 session.flush()
                 saved_alerts.append(alert)
                 alert_id = alert.id
-                formatted_event.event_id = str(alert_id)
+                formatted_event.id = str(alert_id)
                 logger.debug(
                     "Alert saved with ID",
                     extra={
@@ -1192,7 +1192,7 @@ def __handle_formatted_events(
                 logger.debug(
                     "Bulk upserting alert fields",
                     extra={
-                        "alert_event_id": enriched_formatted_event.event_id,
+                        "alert_event_id": enriched_formatted_event.id,
                         "alert_fingerprint": enriched_formatted_event.fingerprint,
                     },
                 )
@@ -1207,15 +1207,15 @@ def __handle_formatted_events(
                 bulk_upsert_alert_fields(
                     tenant_id=tenant_id,
                     fields=fields,
-                    provider_id=enriched_formatted_event.providerId,
-                    provider_type=enriched_formatted_event.providerType,
+                    provider_id=enriched_formatted_event.provider_id,
+                    provider_type=enriched_formatted_event.provider_type,
                     session=session,
                 )
 
                 logger.debug(
                     "Bulk upserted alert fields",
                     extra={
-                        "alert_event_id": enriched_formatted_event.event_id,
+                        "alert_event_id": enriched_formatted_event.id,
                         "alert_fingerprint": enriched_formatted_event.fingerprint,
                     },
                 )
@@ -1229,7 +1229,7 @@ def __handle_formatted_events(
                     logger.debug(
                         "Pushing alert to elasticsearch",
                         extra={
-                            "alert_event_id": alert.event_id,
+                            "alert_event_id": alert.id,
                             "alert_fingerprint": alert.fingerprint,
                         },
                     )

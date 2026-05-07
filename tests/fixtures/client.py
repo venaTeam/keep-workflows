@@ -51,7 +51,7 @@ def create_alert(db_session):
         if last_alert:
             # Get the previous status from the latest alert associated with this LastAlert
             prev_alert = db_session.query(Alert).get(last_alert.alert_id)
-            prev_status = prev_alert.event.get("status") if prev_alert else None
+            prev_status = prev_alert.status if prev_alert else None
             
             # If it was resolved and now is firing, reset first_timestamp
             if prev_status == AlertStatus.RESOLVED.value and status == AlertStatus.FIRING:
@@ -75,23 +75,47 @@ def create_alert(db_session):
         if status == AlertStatus.FIRING:
             firing_start_time = last_alert.first_timestamp
             
-        event = {
+        alert_data = {
             "fingerprint": fingerprint,
             "status": status.value if hasattr(status, "value") else status,
             "lastReceived": alert_timestamp.isoformat(),
             "firingStartTime": firing_start_time.isoformat() if firing_start_time else None,
             "name": "test-alert"
         }
-        event.update(extra_event_data)
+        alert_data.update(extra_event_data)
         
-        alert = Alert(
-            tenant_id=SINGLE_TENANT_UUID,
-            provider_type="mock",
-            provider_id="mock",
-            event=event,
-            fingerprint=fingerprint,
-            timestamp=alert_timestamp,
-        )
+        # Extract native fields and put others in extra_data
+        native_fields = [
+            "id", "tenant_id", "timestamp", "provider_type", "provider_id",
+            "application", "object", "node_name", "severity", "message",
+            "operator", "time_created", "network", "timezone", "custom_key",
+            "expiry_in_minutes", "source", "service", "key_field", "name",
+            "status", "description", "lastReceived", "isFullDuplicate",
+            "isPartialDuplicate", "duplicateReason", "note", "assignee",
+            "incident", "dismissUntil", "dismissed", "enriched_fields",
+            "startedAt", "firingCounter", "unresolvedCounter", "firingStartTime",
+            "firingStartTimeSinceLastResolved", "extra_data", "fingerprint",
+            "alert_hash"
+        ]
+        
+        alert_init_data = {
+            "tenant_id": SINGLE_TENANT_UUID,
+            "provider_type": "mock",
+            "provider_id": "mock",
+            "fingerprint": fingerprint,
+            "timestamp": alert_timestamp,
+        }
+        extra_data = {}
+        for k, v in alert_data.items():
+            if k in native_fields:
+                alert_init_data[k] = v
+            else:
+                extra_data[k] = v
+        
+        if extra_data:
+            alert_init_data["extra_data"] = extra_data
+
+        alert = Alert(**alert_init_data)
         db_session.add(alert)
         db_session.flush()
         

@@ -211,6 +211,8 @@ def convert_db_alerts_to_dto_alerts(
                     enrichments = alert.alert_enrichment.enrichments
 
                 alert_payload = alert.dict()
+                # Ensure ID is a string for AlertDto
+                alert_payload["id"] = str(alert.id) if alert.id else None
                 if alert.extra_data:
                     alert_payload.update(alert.extra_data)
                 alert_payload.update(enrichments)
@@ -245,7 +247,7 @@ def convert_db_alerts_to_dto_alerts(
                     )
                     continue
 
-                alert_dto.event_id = str(alert.id)
+                alert_dto.id = str(alert.id)
 
                 # if the alert is acknowledged, the firing counter is 0
                 if alert_dto.status == AlertStatus.ACKNOWLEDGED.value:
@@ -256,7 +258,7 @@ def convert_db_alerts_to_dto_alerts(
                     alert_dto.unresolvedCounter = 0
 
                 # always update provider id and type to the new values
-                alert_dto.providerId = alert.provider_id
-                alert_dto.providerType = alert.provider_type
+                alert_dto.provider_id = alert.provider_id
+                alert_dto.provider_type = alert.provider_type
                 alerts_dto.append(alert_dto)
     return alerts_dto

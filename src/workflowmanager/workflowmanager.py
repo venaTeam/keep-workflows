@@ -485,8 +485,12 @@ class WorkflowManager:
                         if previous_alert:
                             for field in fields_that_needs_to_be_change:
                                 # the field hasn't change
-                                if getattr(event, field) == previous_alert.event.get(
-                                    field
+                                if getattr(event, field, None) == (
+                                    getattr(previous_alert, field, None)
+                                    if hasattr(previous_alert, field)
+                                    else previous_alert.extra_data.get(field)
+                                    if previous_alert.extra_data
+                                    else None
                                 ):
                                     self.logger.info(
                                         "Skipping the workflow because the field hasn't change",
@@ -503,10 +507,18 @@ class WorkflowManager:
                                 setattr(
                                     event,
                                     "previous_severity",
-                                    previous_alert.event.get("severity"),
+                                    getattr(previous_alert, "severity", None)
+                                    if hasattr(previous_alert, "severity")
+                                    else previous_alert.extra_data.get("severity")
+                                    if previous_alert.extra_data
+                                    else None
                                 )
                                 previous_severity = AlertSeverity(
-                                    previous_alert.event.get("severity")
+                                    getattr(previous_alert, "severity", None)
+                                    if hasattr(previous_alert, "severity")
+                                    else previous_alert.extra_data.get("severity")
+                                    if previous_alert.extra_data
+                                    else None
                                 )
                                 current_severity = AlertSeverity(event.severity)
                                 if previous_severity < current_severity:

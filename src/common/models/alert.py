@@ -8,7 +8,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import pytz
-from pydantic import AnyHttpUrl, BaseModel, Extra, root_validator, validator
+from pydantic import AnyHttpUrl, BaseModel, Extra, Field, root_validator, validator
 
 from src.common.models.severity_base import SeverityBaseInterface
 
@@ -69,7 +69,7 @@ class AlertErrorDto(BaseModel):
 
 
 class AlertDto(BaseModel):
-    id: str | None
+    id: str | None = Field(default=None, alias="event_id")
     name: str
     status: AlertStatus
     severity: AlertSeverity
@@ -91,8 +91,8 @@ class AlertDto(BaseModel):
     # DO NOT MOVE DISMISSED ABOVE dismissedUntil since it is used in root_validator
     dismissed: bool = False  # Whether the alert has been dismissed
     assignee: str | None = None  # The assignee of the alert
-    providerId: str | None = None  # The provider id
-    providerType: str | None = None  # The provider type
+    provider_id: str | None = Field(default=None, alias="providerId")  # The provider id
+    provider_type: str | None = Field(default=None, alias="providerType")  # The provider type
     note: str | None = None  # The note of the alert
     startedAt: str | None = (
         None  # The time the alert started - e.g. if alert triggered multiple times, it will be the time of the first trigger (calculated on querying)
@@ -131,6 +131,14 @@ class AlertDto(BaseModel):
     @validator("fingerprint", pre=True, always=True)
     def assign_fingerprint_if_none(cls, fingerprint, values):
         return get_fingerprint(fingerprint, values)
+ 
+    @validator("source", "enriched_fields", pre=True)
+    def ensure_list(cls, v):
+        if v is None:
+            return []
+        if isinstance(v, dict):
+            return list(v.keys())
+        return v
 
 
 
@@ -269,6 +277,7 @@ class AlertDto(BaseModel):
 
     class Config:
         extra = Extra.allow
+        allow_population_by_field_name = True
         schema_extra = {
             "examples": [
                 {
@@ -298,9 +307,12 @@ class AlertWithIncidentLinkMetadataDto(AlertDto):
 
     @classmethod
     def from_db_instance(cls, db_alert, db_alert_to_incident):
+        payload = db_alert.dict()
+        if db_alert.extra_data:
+            payload.update(db_alert.extra_data)
         return cls(
             is_created_by_ai=db_alert_to_incident.is_created_by_ai,
-            **db_alert.event,
+            **payload,
         )
 
 
