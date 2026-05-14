@@ -485,13 +485,7 @@ class WorkflowManager:
                         if previous_alert:
                             for field in fields_that_needs_to_be_change:
                                 # the field hasn't change
-                                if getattr(event, field, None) == (
-                                    getattr(previous_alert, field, None)
-                                    if hasattr(previous_alert, field)
-                                    else previous_alert.extra_data.get(field)
-                                    if previous_alert.extra_data
-                                    else None
-                                ):
+                                if getattr(event, field, None) == getattr(previous_alert, field, None):
                                     self.logger.info(
                                         "Skipping the workflow because the field hasn't change",
                                         extra={
@@ -508,17 +502,9 @@ class WorkflowManager:
                                     event,
                                     "previous_severity",
                                     getattr(previous_alert, "severity", None)
-                                    if hasattr(previous_alert, "severity")
-                                    else previous_alert.extra_data.get("severity")
-                                    if previous_alert.extra_data
-                                    else None
                                 )
                                 previous_severity = AlertSeverity(
                                     getattr(previous_alert, "severity", None)
-                                    if hasattr(previous_alert, "severity")
-                                    else previous_alert.extra_data.get("severity")
-                                    if previous_alert.extra_data
-                                    else None
                                 )
                                 current_severity = AlertSeverity(event.severity)
                                 if previous_severity < current_severity:

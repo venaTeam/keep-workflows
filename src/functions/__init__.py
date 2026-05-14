@@ -422,7 +422,7 @@ def get_firing_time(alert: dict, time_unit: str, **kwargs) -> str:
         if alert_dto.status != AlertStatus.FIRING.value:
             return "0.00"
 
-        firing_start_time = getattr(alert_dto, "firingStartTime", None) or alert_dto.lastReceived
+        firing_start_time = getattr(alert_dto, "firing_start_time", None) or alert_dto.last_received
         if not firing_start_time:
             return "0.00"
 

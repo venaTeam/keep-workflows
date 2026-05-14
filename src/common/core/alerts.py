@@ -69,7 +69,7 @@ alert_field_configurations = [
         data_type=DataType.STRING,
     ),
     FieldMappingConfiguration(
-        map_from_pattern="startedAt",
+        map_from_pattern="started_at",
         map_to="lastalert.first_timestamp",
         data_type=DataType.DATETIME,
     ),
@@ -99,7 +99,7 @@ alert_field_configurations = [
 
 _INFRA_COLUMNS = {
     "id", "tenant_id", "timestamp", "provider_type", "provider_id",
-    "fingerprint", "alert_hash", "extra_data"
+    "fingerprint", "alert_hash"
 }
 
 _SPECIAL_FIELDS = {
@@ -117,10 +117,10 @@ _SPECIAL_FIELDS = {
         "data_type": DataType.STRING,
         "enum_values": list(reversed([item.value for _, item in enumerate(AlertStatus)])),
     },
-    "lastReceived": {"data_type": DataType.DATETIME},
+    "last_received": {"data_type": DataType.DATETIME},
     "dismissed": {"data_type": DataType.BOOLEAN},
-    "firingCounter": {"data_type": DataType.INTEGER},
-    "unresolvedCounter": {"data_type": DataType.INTEGER},
+    "firing_counter": {"data_type": DataType.INTEGER},
+    "unresolved_counter": {"data_type": DataType.INTEGER},
 }
 
 for col in Alert.__table__.columns:
@@ -144,7 +144,6 @@ alert_field_configurations.append(
         map_from_pattern="*",
         map_to=[
             "JSON(alertenrichment.enrichments).*",
-            "JSON(alert.extra_data).*",
         ],
         data_type=DataType.STRING,
     )
@@ -345,7 +344,7 @@ def build_alerts_query(tenant_id, query: QueryDto):
         select_args=[
             Alert,
             AlertEnrichment,
-            LastAlert.first_timestamp.label("startedAt"),
+            LastAlert.first_timestamp.label("started_at"),
         ]
         + distinct_columns,
         cel=query.cel,
@@ -423,8 +422,8 @@ def query_last_alerts(tenant_id, query: QueryDto) -> Tuple[list[Alert], int]:
         for alert_data in alerts_with_start:
             alert: Alert = alert_data[0]
             alert.alert_enrichment = alert_data[1]
-            if not alert.startedAt:
-                alert.startedAt = str(alert_data[2])
+            if not alert.started_at:
+                alert.started_at = str(alert_data[2])
             alerts.append(alert)
 
         return alerts, total_count

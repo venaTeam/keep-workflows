@@ -157,7 +157,7 @@ for col in Alert.__table__.columns:
 incident_field_configurations.append(
     FieldMappingConfiguration(
         map_from_pattern="alert.*",
-        map_to=["JSON(alertenrichment.enrichments).*", "JSON(alert.extra_data).*"],
+        map_to=["JSON(alertenrichment.enrichments).*"],
     )
 )
 

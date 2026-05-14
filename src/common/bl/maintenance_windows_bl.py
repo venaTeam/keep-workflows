@@ -145,8 +145,6 @@ class MaintenanceWindowsBl:
             payload = alert.dict()
         else:
             payload = alert.dict()
-            if alert.extra_data:
-                payload.update(alert.extra_data)
         # todo: fix this in the future
         if payload.get("source") and isinstance(payload["source"], list):
             payload["source"] = payload["source"][0]
@@ -260,14 +258,14 @@ class MaintenanceWindowsBl:
                     action=ActionType.MAINTENANCE_EXPIRED,
                     description=(
                         f"Alert {alert.id} has recover its previous status, "
-                        f"from {alert.extra_data.get('previous_status') if alert.extra_data else 'unknown'} to {alert.status}"
+                        f"from {getattr(alert, 'previous_status', 'unknown')} to {alert.status}"
                     ),
                 )
 
         for tenant, fp in fingerprints_to_check:
             last_alert = get_last_alert_by_fingerprint(tenant, fp, session)
             alert = get_alert_by_event_id(tenant, str(last_alert.alert_id), session)
-            if not alert.extra_data or "previous_status" not in alert.extra_data:
+            if not getattr(alert, "previous_status", None):
                 logger.info(
                     f"Alert {alert.id} does not have previous status, cannot proceed with recover strategy",
                     extra={
@@ -281,8 +279,6 @@ class MaintenanceWindowsBl:
             if alert.source is not None and not isinstance(alert.source, list):
                 alert.source = [alert.source]
             alert_payload = alert.dict()
-            if alert.extra_data:
-                alert_payload.update(alert.extra_data)
             alert_dto = AlertDto(**alert_payload)
             with tracer.start_as_current_span("mw_recover_strategy_push_to_workflows"):
                 try:
