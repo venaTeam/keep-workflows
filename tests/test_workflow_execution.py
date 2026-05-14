@@ -39,7 +39,7 @@ MAX_WAIT_FOR_WORKFLOW_EXECUTION_COUNT = 30
 # 2. send-slack-message-tier-2: Triggered when an alert has been firing for more than 30 minutes.
 workflow_definition = """workflow:
 id: alert-time-check
-description: Handle alerts based on startedAt timestamp
+description: Handle alerts based on started_at timestamp
 triggers:
 - type: alert
   filters:
@@ -153,7 +153,7 @@ def setup_workflow(db_session):
         id="alert-time-check",
         name="alert-time-check",
         tenant_id=SINGLE_TENANT_UUID,
-        description="Handle alerts based on startedAt timestamp",
+        description="Handle alerts based on started_at timestamp",
         created_by="test@keephq.dev",
         interval=0,
         workflow_raw=workflow_definition,
@@ -498,7 +498,7 @@ def test_workflow_execution_2(
 
 workflow_definition_3 = """workflow:
 id: alert-time-check
-description: Handle alerts based on startedAt timestamp
+description: Handle alerts based on started_at timestamp
 triggers:
 - type: alert
   filters:
@@ -614,7 +614,7 @@ def test_workflow_execution3(
 
 workflow_definition_for_enabled_disabled = """workflow:
   id: %s
-  description: Handle alerts based on startedAt timestamp
+  description: Handle alerts based on started_at timestamp
   triggers:
     - type: alert
       filters:
@@ -1701,7 +1701,7 @@ def test_workflow_with_on_failure_succeeds_after_failing(
         message="Server is upside down",
         status=AlertStatus.FIRING,
         severity=AlertSeverity.CRITICAL,
-        lastReceived=datetime.now(tz=pytz.utc).isoformat(),
+        last_received=datetime.now(tz=pytz.utc).isoformat(),
     )
 
     # Insert the alert into workflow manager to trigger execution
@@ -1762,7 +1762,7 @@ def test_workflow_with_on_failure_action(db_session, workflow_manager, mocker):
         message="Server is upside down",
         status=AlertStatus.FIRING,
         severity=AlertSeverity.CRITICAL,
-        lastReceived=datetime.now(tz=pytz.utc).isoformat(),
+        last_received=datetime.now(tz=pytz.utc).isoformat(),
     )
 
     workflow_manager.insert_events(SINGLE_TENANT_UUID, [alert])
@@ -1806,7 +1806,7 @@ def test_get_all_workflows_with_last_execution(db_session, workflow_manager, moc
         message="Server is upside down",
         status=AlertStatus.FIRING,
         severity=AlertSeverity.CRITICAL,
-        lastReceived=datetime.now(tz=pytz.utc).isoformat(),
+        last_received=datetime.now(tz=pytz.utc).isoformat(),
         should_fail="false",
     )
 
@@ -1819,7 +1819,7 @@ def test_get_all_workflows_with_last_execution(db_session, workflow_manager, moc
         message="Server is upside down again",
         status=AlertStatus.FIRING,
         severity=AlertSeverity.CRITICAL,
-        lastReceived=datetime.now(tz=pytz.utc).isoformat(),
+        last_received=datetime.now(tz=pytz.utc).isoformat(),
         should_fail="true",
     )
 

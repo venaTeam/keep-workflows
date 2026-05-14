@@ -33,14 +33,14 @@ def client(test_app, db_session):
 
 @pytest.fixture
 def create_alert(db_session):
-    def _create_alert(fingerprint, status, lastReceived=None, extra_event_data=None):
+    def _create_alert(fingerprint, status, last_received=None, extra_event_data=None):
         from src.common.models.alert import AlertStatus
         from datetime import datetime, timezone
         from uuid import uuid4
         
         extra_event_data = extra_event_data or {}
         
-        alert_timestamp = lastReceived if lastReceived else datetime.now(tz=timezone.utc)
+        alert_timestamp = last_received if last_received else datetime.now(tz=timezone.utc)
         
         # 1. Update/Create LastAlert first
         last_alert = db_session.query(LastAlert).filter_by(
@@ -70,7 +70,7 @@ def create_alert(db_session):
         
         db_session.flush() # Ensure it's in DB
         
-        # 2. Now calculate firingStartTime based on the updated LastAlert
+        # 2. Now calculate firing_start_time based on the updated LastAlert
         firing_start_time = alert_timestamp
         if status == AlertStatus.FIRING:
             firing_start_time = last_alert.first_timestamp
@@ -78,8 +78,8 @@ def create_alert(db_session):
         alert_data = {
             "fingerprint": fingerprint,
             "status": status.value if hasattr(status, "value") else status,
-            "lastReceived": alert_timestamp.isoformat(),
-            "firingStartTime": firing_start_time.isoformat() if firing_start_time else None,
+            "last_received": alert_timestamp.isoformat(),
+            "firing_start_time": firing_start_time.isoformat() if firing_start_time else None,
             "name": "test-alert"
         }
         alert_data.update(extra_event_data)
@@ -90,11 +90,11 @@ def create_alert(db_session):
             "application", "object", "node_name", "severity", "message",
             "operator", "time_created", "network", "timezone", "custom_key",
             "expiry_in_minutes", "source", "service", "key_field", "name",
-            "status", "description", "lastReceived", "isFullDuplicate",
-            "isPartialDuplicate", "duplicateReason", "note", "assignee",
-            "incident", "dismissUntil", "dismissed", "enriched_fields",
-            "startedAt", "firingCounter", "unresolvedCounter", "firingStartTime",
-            "firingStartTimeSinceLastResolved", "extra_data", "fingerprint",
+            "status", "description", "last_received", "is_full_duplicate",
+            "is_partial_duplicate", "duplicate_reason", "note", "assignee",
+            "incident", "dismiss_until", "dismissed", "enriched_fields",
+            "started_at", "firing_counter", "unresolved_counter", "firing_start_time",
+            "firing_start_time_since_last_resolved", "extra_data", "fingerprint",
             "alert_hash"
         ]
         

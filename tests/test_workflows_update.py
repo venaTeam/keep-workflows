@@ -113,7 +113,7 @@ def get_manual_run_event(name: str):
         name=name,
         status=AlertStatus.FIRING,
         severity=AlertSeverity.CRITICAL,
-        lastReceived=current_time.isoformat(),
+        last_received=current_time.isoformat(),
         source=["manual"],
         fingerprint="manual-run",
     )

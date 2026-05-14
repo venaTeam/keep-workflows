@@ -36,7 +36,7 @@ triggers:
         status="firing",
         severity="critical",
         fingerprint="fp1",
-        lastReceived="2025-01-30T09:19:02.519Z",
+        last_received="2025-01-30T09:19:02.519Z",
     )
 
     ftp_alert = AlertDto(
@@ -47,7 +47,7 @@ triggers:
         status="firing",
         severity="critical",
         fingerprint="fp2",
-        lastReceived="2025-01-30T09:19:02.519Z",
+        last_received="2025-01-30T09:19:02.519Z",
     )
 
     # Should not match
@@ -59,7 +59,7 @@ triggers:
         status="firing",
         severity="critical",
         fingerprint="fp3",
-        lastReceived="2025-01-30T09:19:02.519Z",
+        last_received="2025-01-30T09:19:02.519Z",
     )
 
     workflow_manager.insert_events(
@@ -105,7 +105,7 @@ triggers:
         status="firing",
         severity="critical",
         fingerprint="fp1",
-        lastReceived="2025-01-30T09:19:02.519Z",
+        last_received="2025-01-30T09:19:02.519Z",
     )
 
     prometheus_alert = AlertDto(
@@ -115,7 +115,7 @@ triggers:
         status="firing",
         severity="warning",
         fingerprint="fp2",
-        lastReceived="2025-01-30T09:19:02.519Z",
+        last_received="2025-01-30T09:19:02.519Z",
     )
 
     sentry_alert = AlertDto(
@@ -125,7 +125,7 @@ triggers:
         status="firing",
         severity="error",
         fingerprint="fp3",
-        lastReceived="2025-01-30T09:19:02.519Z",
+        last_received="2025-01-30T09:19:02.519Z",
     )
 
     workflow_manager.insert_events(
@@ -182,7 +182,7 @@ triggers:
         status="firing",
         severity="critical",
         fingerprint="fp1",
-        lastReceived="2025-01-30T09:19:02.519Z",
+        last_received="2025-01-30T09:19:02.519Z",
     )
 
     # Wrong severity
@@ -194,7 +194,7 @@ triggers:
         status="firing",
         severity="warning",
         fingerprint="fp2",
-        lastReceived="2025-01-30T09:19:02.519Z",
+        last_received="2025-01-30T09:19:02.519Z",
     )
 
     workflow_manager.insert_events(SINGLE_TENANT_UUID, [matching_alert, wrong_severity])
@@ -240,7 +240,7 @@ triggers:
             status="firing",
             severity="critical",
             fingerprint=f"fp{i}",
-            lastReceived="2025-01-30T09:19:02.519Z",
+            last_received="2025-01-30T09:19:02.519Z",
         )
         for i, source in enumerate(test_sources)
     ]
@@ -256,7 +256,7 @@ triggers:
         assert any(
             a.id == f"alert-{i}"
             and a.source == [source]
-            and a.lastReceived == "2025-01-30T09:19:02.519Z"
+            and a.last_received == "2025-01-30T09:19:02.519Z"
             for a in triggered_alerts
         )
 
@@ -298,7 +298,7 @@ triggers:
         status="firing",
         severity="critical",
         fingerprint="fp1",
-        lastReceived="2025-01-30T09:19:02.519Z",
+        last_received="2025-01-30T09:19:02.519Z",
     )
 
     # Excluded service
@@ -310,7 +310,7 @@ triggers:
         status="firing",
         severity="critical",
         fingerprint="fp2",
-        lastReceived="2025-01-30T09:19:02.519Z",
+        last_received="2025-01-30T09:19:02.519Z",
     )
 
     workflow_manager.insert_events(SINGLE_TENANT_UUID, [matching_alert, excluded_alert])
@@ -322,7 +322,7 @@ triggers:
     assert triggered_alert.source == ["grafana"]
     assert triggered_alert.service == "api"
     assert triggered_alert.severity == "critical"
-    assert triggered_alert.lastReceived == "2025-01-30T09:19:02.519Z"
+    assert triggered_alert.last_received == "2025-01-30T09:19:02.519Z"
 
 
 def test_nested_regex_patterns(db_session):
@@ -357,7 +357,7 @@ triggers:
             status="firing",
             severity="critical",
             fingerprint="fp1",
-            lastReceived="2025-01-30T09:19:02.519Z",
+            last_received="2025-01-30T09:19:02.519Z",
         ),
         AlertDto(
             id="alert-2",
@@ -366,7 +366,7 @@ triggers:
             status="firing",
             severity="warning",
             fingerprint="fp2",
-            lastReceived="2025-01-30T09:19:02.519Z",
+            last_received="2025-01-30T09:19:02.519Z",
         ),
     ]
 
@@ -379,7 +379,7 @@ triggers:
             status="firing",
             severity="info",
             fingerprint="fp3",
-            lastReceived="2025-01-30T09:19:02.519Z",
+            last_received="2025-01-30T09:19:02.519Z",
         ),
         AlertDto(
             id="alert-4",
@@ -388,7 +388,7 @@ triggers:
             status="firing",
             severity="critical",
             fingerprint="fp4",
-            lastReceived="2025-01-30T09:19:02.519Z",
+            last_received="2025-01-30T09:19:02.519Z",
         ),
     ]
 
@@ -410,14 +410,14 @@ triggers:
 
 
 def test_time_based_filters(db_session):
-    """Test filtering alerts based on lastReceived timestamp patterns"""
+    """Test filtering alerts based on last_received timestamp patterns"""
     workflow_manager = WorkflowManager()
     workflow_definition = """workflow:
 id: time-check
 triggers:
 - type: alert
   filters:
-  - key: lastReceived
+  - key: last_received
     value: r"2025-01-30T09:.*"
   - key: severity
     value: critical
@@ -442,7 +442,7 @@ triggers:
         status="firing",
         severity="critical",
         fingerprint="fp1",
-        lastReceived="2025-01-30T09:15:00.000Z",
+        last_received="2025-01-30T09:15:00.000Z",
     )
 
     # Wrong time pattern
@@ -453,7 +453,7 @@ triggers:
         status="firing",
         severity="critical",
         fingerprint="fp2",
-        lastReceived="2025-01-30T10:19:02.519Z",
+        last_received="2025-01-30T10:19:02.519Z",
     )
 
     # Wrong severity
@@ -464,7 +464,7 @@ triggers:
         status="firing",
         severity="warning",
         fingerprint="fp3",
-        lastReceived="2025-01-30T09:19:02.519Z",
+        last_received="2025-01-30T09:19:02.519Z",
     )
 
     workflow_manager.insert_events(
@@ -475,7 +475,7 @@ triggers:
     triggered_alert = workflow_manager.scheduler.workflows_to_run[0].get("event")
     assert triggered_alert.id == "alert-1"
     assert triggered_alert.severity == "critical"
-    assert triggered_alert.lastReceived.startswith("2025-01-30T09:")
+    assert triggered_alert.last_received.startswith("2025-01-30T09:")
 
 
 def test_empty_string_filters(db_session):
@@ -512,7 +512,7 @@ triggers:
         status="firing",
         severity="critical",
         fingerprint="fp1",
-        lastReceived="2025-01-30T09:19:02.519Z",
+        last_received="2025-01-30T09:19:02.519Z",
     )
 
     # Non-empty service field
@@ -524,7 +524,7 @@ triggers:
         status="firing",
         severity="critical",
         fingerprint="fp2",
-        lastReceived="2025-01-30T09:19:02.519Z",
+        last_received="2025-01-30T09:19:02.519Z",
     )
 
     workflow_manager.insert_events(
@@ -570,7 +570,7 @@ triggers:
             status="firing",
             severity="critical",
             fingerprint="fp1",
-            lastReceived="2025-01-30T09:19:02.519Z",
+            last_received="2025-01-30T09:19:02.519Z",
         ),
         AlertDto(
             id="alert-2",
@@ -579,7 +579,7 @@ triggers:
             status="firing",
             severity="warning",
             fingerprint="fp2",
-            lastReceived="2025-01-30T09:19:02.519Z",
+            last_received="2025-01-30T09:19:02.519Z",
         ),
     ]
 
@@ -592,7 +592,7 @@ triggers:
             status="firing",
             severity="info",
             fingerprint="fp3",
-            lastReceived="2025-01-30T09:19:02.519Z",
+            last_received="2025-01-30T09:19:02.519Z",
         ),
         AlertDto(
             id="alert-4",
@@ -601,7 +601,7 @@ triggers:
             status="firing",
             severity="critical",
             fingerprint="fp4",
-            lastReceived="2025-01-30T09:19:02.519Z",
+            last_received="2025-01-30T09:19:02.519Z",
         ),
     ]
     workflow_manager.insert_events(
@@ -611,14 +611,14 @@ triggers:
 
 
 def test_time_based_filters(db_session):
-    """Test filtering alerts based on lastReceived timestamp patterns"""
+    """Test filtering alerts based on last_received timestamp patterns"""
     workflow_manager = WorkflowManager()
     workflow_definition = """workflow:
 id: time-check
 triggers:
 - type: alert
   filters:
-  - key: lastReceived
+  - key: last_received
     value: r"2025-01-30T09:.*"
   - key: severity
     value: critical
@@ -643,7 +643,7 @@ triggers:
         status="firing",
         severity="critical",
         fingerprint="fp1",
-        lastReceived="2025-01-30T09:15:00.000Z",
+        last_received="2025-01-30T09:15:00.000Z",
     )
 
     # Wrong time pattern
@@ -654,7 +654,7 @@ triggers:
         status="firing",
         severity="critical",
         fingerprint="fp2",
-        lastReceived="2025-01-30T10:19:02.519Z",
+        last_received="2025-01-30T10:19:02.519Z",
     )
 
     # Wrong severity
@@ -665,7 +665,7 @@ triggers:
         status="firing",
         severity="warning",
         fingerprint="fp3",
-        lastReceived="2025-01-30T09:19:02.519Z",
+        last_received="2025-01-30T09:19:02.519Z",
     )
 
     workflow_manager.insert_events(
@@ -676,7 +676,7 @@ triggers:
     triggered_alert = workflow_manager.scheduler.workflows_to_run[0].get("event")
     assert triggered_alert.id == "alert-1"
     assert triggered_alert.severity == "critical"
-    assert triggered_alert.lastReceived.startswith("2025-01-30T09:")
+    assert triggered_alert.last_received.startswith("2025-01-30T09:")
 
 
 def test_empty_string_filters(db_session):
@@ -713,7 +713,7 @@ triggers:
         status="firing",
         severity="critical",
         fingerprint="fp1",
-        lastReceived="2025-01-30T09:19:02.519Z",
+        last_received="2025-01-30T09:19:02.519Z",
     )
 
     # Non-empty service field
@@ -725,7 +725,7 @@ triggers:
         status="firing",
         severity="critical",
         fingerprint="fp2",
-        lastReceived="2025-01-30T09:19:02.519Z",
+        last_received="2025-01-30T09:19:02.519Z",
     )
 
     workflow_manager.insert_events(
@@ -777,7 +777,7 @@ triggers:
         status="firing",
         severity="info",
         fingerprint="fp1",
-        lastReceived="2025-01-30T09:19:02.519Z",
+        last_received="2025-01-30T09:19:02.519Z",
     )
 
     # Should not match (excluded severity)
@@ -789,7 +789,7 @@ triggers:
         status="firing",
         severity="warning",
         fingerprint="fp2",
-        lastReceived="2025-01-30T09:19:02.519Z",
+        last_received="2025-01-30T09:19:02.519Z",
     )
 
     # Should not match (excluded status)
@@ -801,7 +801,7 @@ triggers:
         status="resolved",
         severity="info",
         fingerprint="fp3",
-        lastReceived="2025-01-30T09:19:02.519Z",
+        last_received="2025-01-30T09:19:02.519Z",
     )
 
     workflow_manager.insert_events(
@@ -851,7 +851,7 @@ triggers:
             status="firing",
             severity="critical",
             fingerprint="fp1",
-            lastReceived="2025-01-30T09:19:02.519Z",
+            last_received="2025-01-30T09:19:02.519Z",
         ),
         AlertDto(
             id="alert-2",
@@ -860,7 +860,7 @@ triggers:
             status="firing",
             severity="warning",
             fingerprint="fp2",
-            lastReceived="2025-01-30T09:19:02.519Z",
+            last_received="2025-01-30T09:19:02.519Z",
         ),
     ]
 
@@ -873,7 +873,7 @@ triggers:
             status="firing",
             severity="critical",
             fingerprint="fp3",
-            lastReceived="2025-01-30T09:19:02.519Z",
+            last_received="2025-01-30T09:19:02.519Z",
         ),
         AlertDto(
             id="alert-4",
@@ -882,7 +882,7 @@ triggers:
             status="firing",
             severity="warning",
             fingerprint="fp4",
-            lastReceived="2025-01-30T09:19:02.519Z",
+            last_received="2025-01-30T09:19:02.519Z",
         ),
     ]
 
@@ -931,7 +931,7 @@ triggers:
             status="firing",
             severity="critical",
             fingerprint="fp1",
-            lastReceived="2025-01-30T09:19:02.519Z",
+            last_received="2025-01-30T09:19:02.519Z",
         ),
         AlertDto(
             id="alert-2",
@@ -940,7 +940,7 @@ triggers:
             status="firing",
             severity="critical",
             fingerprint="fp2",
-            lastReceived="2025-01-30T09:19:02.519Z",
+            last_received="2025-01-30T09:19:02.519Z",
         ),
     ]
 
@@ -953,7 +953,7 @@ triggers:
             status="firing",
             severity="critical",
             fingerprint="fp3",
-            lastReceived="2025-01-30T09:19:02.519Z",
+            last_received="2025-01-30T09:19:02.519Z",
         ),
         AlertDto(
             id="alert-4",
@@ -962,7 +962,7 @@ triggers:
             status="firing",
             severity="critical",
             fingerprint="fp4",
-            lastReceived="2025-01-30T09:19:02.519Z",
+            last_received="2025-01-30T09:19:02.519Z",
         ),
     ]
 
@@ -1011,7 +1011,7 @@ triggers:
             status="firing",
             severity="critical",
             fingerprint="fp1",
-            lastReceived="2025-01-30T09:19:02.519Z",
+            last_received="2025-01-30T09:19:02.519Z",
         ),
         AlertDto(
             id="alert-2",
@@ -1020,7 +1020,7 @@ triggers:
             status="firing",
             severity="critical",
             fingerprint="fp2",
-            lastReceived="2025-01-30T09:19:02.519Z",
+            last_received="2025-01-30T09:19:02.519Z",
         ),
         AlertDto(
             id="alert-3",
@@ -1029,7 +1029,7 @@ triggers:
             status="firing",
             severity="critical",
             fingerprint="fp3",
-            lastReceived="2025-01-30T09:19:02.519Z",
+            last_received="2025-01-30T09:19:02.519Z",
         ),
         AlertDto(
             id="alert-4",
@@ -1038,7 +1038,7 @@ triggers:
             status="firing",
             severity="critical",
             fingerprint="fp4",
-            lastReceived="2025-01-30T09:19:02.519Z",
+            last_received="2025-01-30T09:19:02.519Z",
         ),
     ]
 
@@ -1050,7 +1050,7 @@ triggers:
             status="firing",
             severity="critical",
             fingerprint="fp5",
-            lastReceived="2025-01-30T09:19:02.519Z",
+            last_received="2025-01-30T09:19:02.519Z",
         ),
         AlertDto(
             id="alert-6",
@@ -1059,7 +1059,7 @@ triggers:
             status="firing",
             severity="warning",
             fingerprint="fp6",
-            lastReceived="2025-01-30T09:19:02.519Z",
+            last_received="2025-01-30T09:19:02.519Z",
         ),
     ]
 
@@ -1105,7 +1105,7 @@ triggers:
             status="firing",
             severity="critical",
             fingerprint="fp1",
-            lastReceived="2025-01-30T09:19:02.519Z",
+            last_received="2025-01-30T09:19:02.519Z",
         ),
         AlertDto(
             id="alert-2",
@@ -1114,7 +1114,7 @@ triggers:
             status="firing",
             severity="critical",
             fingerprint="fp2",
-            lastReceived="2025-01-30T09:19:02.519Z",
+            last_received="2025-01-30T09:19:02.519Z",
         ),
     ]
 
@@ -1126,7 +1126,7 @@ triggers:
             status="firing",
             severity="critical",
             fingerprint="fp3",
-            lastReceived="2025-01-30T09:19:02.519Z",
+            last_received="2025-01-30T09:19:02.519Z",
         ),
         AlertDto(
             id="alert-4",
@@ -1135,7 +1135,7 @@ triggers:
             status="firing",
             severity="warning",
             fingerprint="fp4",
-            lastReceived="2025-01-30T09:19:02.519Z",
+            last_received="2025-01-30T09:19:02.519Z",
         ),
     ]
 

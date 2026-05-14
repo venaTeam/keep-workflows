@@ -45,7 +45,7 @@ def test_workflow(
         id="alert-time-check",
         name="alert-time-check",
         tenant_id=SINGLE_TENANT_UUID,
-        description="Handle alerts based on startedAt timestamp",
+        description="Handle alerts based on started_at timestamp",
         created_by="test@keephq.dev",
         interval=0,
         workflow_raw=workflow_test,
@@ -431,7 +431,7 @@ def test_workflow_alert_creation(db_session):
         # assert
         alert = alert[0]
         assert alert.fingerprint == "fingerprint-test"
-        assert alert.lastReceived.startswith("2024-02-01T10:00:00")
+        assert alert.last_received.startswith("2024-02-01T10:00:00")
 
     with freeze_time("2024-02-15 10:00:00"):
         manager = WorkflowManager.get_instance()
@@ -456,7 +456,7 @@ def test_workflow_alert_creation(db_session):
         # assert
         alert = alert[0]
         assert alert.fingerprint == "fingerprint-test"
-        assert alert.lastReceived.startswith("2024-02-15T10:00:00")
+        assert alert.last_received.startswith("2024-02-15T10:00:00")
 
 
 def test_workflow_python(db_session):
