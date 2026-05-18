@@ -662,6 +662,11 @@ def __save_to_db(
                 # Unknown fields are dropped (no longer stored in extra_data)
 
             alert_args = sanitize_alert(alert_args)
+            # last_received column is TIMESTAMPTZ — bind as datetime, not ISO string
+            if isinstance(alert_args.get("last_received"), str):
+                alert_args["last_received"] = dateutil.parser.isoparse(
+                    alert_args["last_received"]
+                )
             if timestamp_forced is not None:
                 alert_args["timestamp"] = timestamp_forced
 
