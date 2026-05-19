@@ -485,9 +485,7 @@ class WorkflowManager:
                         if previous_alert:
                             for field in fields_that_needs_to_be_change:
                                 # the field hasn't change
-                                if getattr(event, field) == previous_alert.event.get(
-                                    field
-                                ):
+                                if getattr(event, field, None) == getattr(previous_alert, field, None):
                                     self.logger.info(
                                         "Skipping the workflow because the field hasn't change",
                                         extra={
@@ -503,10 +501,10 @@ class WorkflowManager:
                                 setattr(
                                     event,
                                     "previous_severity",
-                                    previous_alert.event.get("severity"),
+                                    getattr(previous_alert, "severity", None)
                                 )
                                 previous_severity = AlertSeverity(
-                                    previous_alert.event.get("severity")
+                                    getattr(previous_alert, "severity", None)
                                 )
                                 current_severity = AlertSeverity(event.severity)
                                 if previous_severity < current_severity:

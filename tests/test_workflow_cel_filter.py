@@ -55,7 +55,7 @@ def create_alert():
             "name": "test-alert",
             "status": AlertStatus.FIRING,
             "severity": AlertSeverity.CRITICAL,
-            "lastReceived": datetime.datetime.now().isoformat(),
+            "last_received": datetime.datetime.now().isoformat(),
             "fingerprint": "test-fingerprint",
         }
         alert_data.update(properties)

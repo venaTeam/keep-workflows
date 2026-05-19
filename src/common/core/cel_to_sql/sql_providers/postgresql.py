@@ -68,6 +68,7 @@ class CelToPostgreSqlProvider(BaseCelToSqlProvider):
         """
         metadata = self.properties_metadata.get_property_metadata_for_str(cel_field)
         field_expressions = []
+        is_json_field = []  # Track which expressions are from JSON fields
 
         for field_mapping in metadata.field_mappings:
             if isinstance(field_mapping, JsonFieldMapping):
@@ -81,12 +82,22 @@ class CelToPostgreSqlProvider(BaseCelToSqlProvider):
                 ):
                     json_exp = self.cast(json_exp, metadata.data_type)
                 field_expressions.append(json_exp)
+                is_json_field.append(True)
                 continue
             elif isinstance(field_mapping, SimpleFieldMapping):
                 field_expressions.append(field_mapping.map_to)
+                is_json_field.append(False)
                 continue
 
             raise ValueError(f"Unsupported field mapping type: {type(field_mapping)}")
+
+        # Cast simple fields to TEXT when mixed with JSON fields to avoid
+        # PostgreSQL COALESCE type mismatch errors (JSON ->> returns text)
+        if any(is_json_field) and len(field_expressions) > 1:
+            field_expressions = [
+                exp if is_json else f"CAST({exp} AS TEXT)"
+                for exp, is_json in zip(field_expressions, is_json_field)
+            ]
 
         if len(field_expressions) > 1:
             return self.coalesce(field_expressions)

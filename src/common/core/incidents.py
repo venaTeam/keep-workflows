@@ -133,11 +133,33 @@ incident_field_configurations = [
         map_to="incident.affected_services",
         data_type=DataType.ARRAY,
     ),
+]
+
+from src.common.models.db.alert import Alert
+from src.common.core.alerts import _INFRA_COLUMNS, _SPECIAL_FIELDS
+
+for col in Alert.__table__.columns:
+    if col.name in _INFRA_COLUMNS:
+        continue
+    special = _SPECIAL_FIELDS.get(col.name, {})
+    incident_field_configurations.append(
+        FieldMappingConfiguration(
+            map_from_pattern=f"alert.{col.name}",
+            map_to=[
+                "JSON(alertenrichment.enrichments).*",
+                f"alert.{col.name}",
+            ],
+            data_type=special.get("data_type", DataType.STRING),
+            enum_values=special.get("enum_values"),
+        )
+    )
+
+incident_field_configurations.append(
     FieldMappingConfiguration(
         map_from_pattern="alert.*",
-        map_to=["JSON(alertenrichment.enrichments).*", "JSON(alert.event).*"],
-    ),
-]
+        map_to=["JSON(alertenrichment.enrichments).*"],
+    )
+)
 
 properties_metadata = PropertiesMetadata(incident_field_configurations)
 

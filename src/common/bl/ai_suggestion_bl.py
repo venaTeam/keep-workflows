@@ -480,8 +480,8 @@ class AISuggestionBl:
                     alert_services.add(alert.service)
 
             incident_alerts = [alerts_dto[i - 1] for i in incident.alerts]
-            start_time = min(alert.lastReceived for alert in incident_alerts)
-            last_seen_time = max(alert.lastReceived for alert in incident_alerts)
+            start_time = min(alert.last_received for alert in incident_alerts)
+            last_seen_time = max(alert.last_received for alert in incident_alerts)
 
             incident_dto = IncidentDto(
                 id=uuid.uuid4(),

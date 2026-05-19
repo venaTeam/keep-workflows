@@ -302,7 +302,7 @@ class WorkflowScheduler:
                 event_type = "incident"
                 fingerprint = "incident:{}".format(event_id)
             else:
-                event_id = event.event_id
+                event_id = str(event.id) if event.id else None
                 event_type = "alert"
                 fingerprint = event.fingerprint
 
@@ -490,7 +490,7 @@ class WorkflowScheduler:
                 event_type = "incident"
                 fingerprint = event_id
             else:
-                event_id = event.event_id
+                event_id = str(event.id) if event.id else None
                 event_type = "alert"
                 fingerprint = event.fingerprint
 

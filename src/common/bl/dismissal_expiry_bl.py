@@ -48,7 +48,7 @@ class DismissalExpiryBl:
             session, AlertEnrichment.enrichments, "dismissed"
         )
         dismissed_until_field = get_json_extract_field(
-            session, AlertEnrichment.enrichments, "dismissUntil"
+            session, AlertEnrichment.enrichments, "dismiss_until"
         )
 
         # Build cross-database compatible boolean comparison
@@ -91,7 +91,7 @@ class DismissalExpiryBl:
         # Filter in Python for safety and clarity (parsing ISO timestamps)
         expired_enrichments = []
         for enrichment in candidate_enrichments:
-            dismiss_until_str = enrichment.enrichments.get("dismissUntil")
+            dismiss_until_str = enrichment.enrichments.get("dismiss_until")
             if not dismiss_until_str or dismiss_until_str == "forever":
                 continue
 
@@ -187,7 +187,7 @@ class DismissalExpiryBl:
                 # Update enrichment - set back to not dismissed
                 new_enrichments = enrichment.enrichments.copy()
                 new_enrichments["dismissed"] = False
-                new_enrichments["dismissUntil"] = None  # Clear the original field
+                new_enrichments["dismiss_until"] = None  # Clear the original field
 
                 # Reset status if it was set to suppressed during dismissal
                 enrichment_status = enrichment.enrichments.get("status")
@@ -271,12 +271,12 @@ class DismissalExpiryBl:
 
                     if latest_alert:
                         # Create AlertDto with updated enrichments
-                        alert_data = latest_alert.event.copy()
+                        alert_data = latest_alert.dict()
 
                         # Only update specific enrichment fields, don't override alert event data with None values
                         enrichment_fields = [
                             "dismissed",
-                            "dismissUntil",
+                            "dismiss_until",
                             "note",
                             "assignee",
                             "status",
@@ -290,7 +290,7 @@ class DismissalExpiryBl:
                             elif (
                                 field in new_enrichments
                                 and new_enrichments[field] is None
-                                and field in ["dismissed", "dismissUntil"]
+                                and field in ["dismissed", "dismiss_until"]
                             ):
                                 # For dismissal fields, None is a valid value (means not dismissed)
                                 alert_data[field] = new_enrichments[field]

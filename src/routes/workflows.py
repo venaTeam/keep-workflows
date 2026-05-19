@@ -364,8 +364,8 @@ def get_event_from_body(body: dict, tenant_id: str):
             except ValueError:
                 pass
     event_body["name"] = event_body.get("name", "manual-run")
-    event_body["lastReceived"] = event_body.get(
-        "lastReceived", datetime.datetime.now(tz=datetime.timezone.utc).isoformat()
+    event_body["last_received"] = event_body.get(
+        "last_received", datetime.datetime.now(tz=datetime.timezone.utc).isoformat()
     )
     if "source" in event_body and not isinstance(event_body["source"], list):
         event_body["source"] = [event_body["source"]]

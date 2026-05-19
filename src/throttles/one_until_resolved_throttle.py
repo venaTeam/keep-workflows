@@ -44,7 +44,7 @@ class OneUntilResolvedThrottle(BaseThrottle):
             return False
 
         # if the last time the alert were triggered it was in resolved status, return false
-        if AlertStatus(alert.event.get("status")) == AlertStatus.RESOLVED:
+        if AlertStatus(alert.status) == AlertStatus.RESOLVED:
             return False
 
         # else, return true because its already firing

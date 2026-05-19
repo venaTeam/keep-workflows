@@ -8,7 +8,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import pytz
-from pydantic import AnyHttpUrl, BaseModel, Extra, root_validator, validator
+from pydantic import AnyHttpUrl, BaseModel, Extra, Field, root_validator, validator
 
 from src.common.models.severity_base import SeverityBaseInterface
 
@@ -69,47 +69,35 @@ class AlertErrorDto(BaseModel):
 
 
 class AlertDto(BaseModel):
-    id: str | None
+    id: str | None = Field(default=None, alias="event_id")
     name: str
     status: AlertStatus
     severity: AlertSeverity
-    lastReceived: str
-    firingStartTime: str | None = None
-    firingStartTimeSinceLastResolved: str | None = None
-    firingCounter: int = 0
-    unresolvedCounter: int = 0
-    environment: str = "undefined"
-    isFullDuplicate: bool | None = False
-    isPartialDuplicate: bool | None = False
-    duplicateReason: str | None = None
-    service: str | None = None
+    last_received: str = Field(default=None, alias="lastReceived")
+    firing_start_time: str | None = Field(default=None, alias="firingStartTime")
+    firing_start_time_since_last_resolved: str | None = Field(default=None, alias="firingStartTimeSinceLastResolved")
+    firing_counter: int = Field(default=0, alias="firingCounter")
+    unresolved_counter: int = Field(default=0, alias="unresolvedCounter")
+    is_full_duplicate: bool | None = Field(default=False, alias="isFullDuplicate")
+    is_partial_duplicate: bool | None = Field(default=False, alias="isPartialDuplicate")
+    duplicate_reason: str | None = Field(default=None, alias="duplicateReason")
     source: list[str] | None = []
-    apiKeyRef: str | None = None
     message: str | None = None
     description: str | None = None
-    description_format: str | None = None  # Can be 'markdown' or 'html'
-    pushed: bool = False  # Whether the alert was pushed or pulled from the provider
-    event_id: str | None = None  # Database alert id
-    url: AnyHttpUrl | None = None
-    imageUrl: AnyHttpUrl | None = None
-    labels: dict | None = {}
     fingerprint: str | None = (
         None  # The fingerprint of the alert (used for alert de-duplication)
     )
-    deleted: bool = False  # @tal: Obselete field since we have dismissed, but kept for backwards compatibility
-    dismissUntil: str | None = None  # The time until the alert is dismissed
+    dismiss_until: str | None = Field(default=None, alias="dismissUntil")  # The time until the alert is dismissed
     # DO NOT MOVE DISMISSED ABOVE dismissedUntil since it is used in root_validator
     dismissed: bool = False  # Whether the alert has been dismissed
     assignee: str | None = None  # The assignee of the alert
-    providerId: str | None = None  # The provider id
-    providerType: str | None = None  # The provider type
+    provider_id: str | None = Field(default=None, alias="providerId")  # The provider id
+    provider_type: str | None = Field(default=None, alias="providerType")  # The provider type
     note: str | None = None  # The note of the alert
-    startedAt: str | None = (
-        None  # The time the alert started - e.g. if alert triggered multiple times, it will be the time of the first trigger (calculated on querying)
+    started_at: str | None = Field(
+        default=None, alias="startedAt"  # The time the alert started
     )
-    isNoisy: bool = False  # Whether the alert is noisy
 
-    enriched_fields: list = []
     incident: str | None = None
 
     def __str__(self) -> str:
@@ -125,7 +113,7 @@ class AlertDto(BaseModel):
 
             # Fields to exclude from comparison since they are bit different in different db's
             # todo: solve it in a better way
-            exclude_fields = {"lastReceived", "startedAt", "event_id"}
+            exclude_fields = {"last_received", "started_at", "event_id"}
 
             # Remove excluded fields from both dictionaries
             for field in exclude_fields:
@@ -142,30 +130,18 @@ class AlertDto(BaseModel):
     @validator("fingerprint", pre=True, always=True)
     def assign_fingerprint_if_none(cls, fingerprint, values):
         return get_fingerprint(fingerprint, values)
+ 
+    @validator("source", pre=True)
+    def ensure_list(cls, v):
+        if v is None:
+            return []
+        if isinstance(v, dict):
+            return list(v.keys())
+        return v
 
-    @validator("deleted", pre=True, always=True)
-    def validate_deleted(cls, deleted, values):
-        if isinstance(deleted, bool):
-            return deleted
-        if isinstance(deleted, list):
-            return values.get("lastReceived") in deleted
 
-    @validator("url", pre=True)
-    def prepend_https(cls, url):
-        if not isinstance(url, str):
-            return url
 
-        url = url.strip()
-        # If the URL is empty, return None to avoid validation errors
-        if not url:
-            return None
-        if not url.startswith("http"):
-            # @tb: in some cases we drop the event because of invalid url with no scheme
-            # invalid or missing URL scheme (type=value_error.url.scheme)
-            url = f"https://{url}"
-        return urllib.parse.quote(url, safe="/:?=&")
-
-    @validator("lastReceived", pre=True, always=True)
+    @validator("last_received", pre=True, always=True)
     def validate_last_received(cls, last_received):
         def convert_to_iso_format(date_string):
             try:
@@ -192,6 +168,15 @@ class AlertDto(BaseModel):
         if not last_received:
             return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
+        # ORM column is TIMESTAMPTZ — datetime arrives directly from SQLAlchemy
+        if isinstance(last_received, datetime.datetime):
+            dt_utc = (
+                last_received.astimezone(pytz.UTC)
+                if last_received.tzinfo is not None
+                else last_received.replace(tzinfo=pytz.UTC)
+            )
+            return dt_utc.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
         # Try to convert the date to iso format
         # see: https://github.com/keephq/keep/issues/1397
         iso_date = convert_to_iso_format(last_received)
@@ -216,12 +201,12 @@ class AlertDto(BaseModel):
             return dismissed
 
         # else, validate dismissedUntil
-        dismiss_until = values.get("dismissUntil")
-        # if there's no dismissUntil, return just return dismissed
+        dismiss_until = values.get("dismiss_until")
+        # if there's no dismiss_until, return just return dismissed
         if not dismiss_until or dismiss_until == "forever":
             return dismissed
 
-        # if there's dismissUntil, validate it
+        # if there's dismiss_until, validate it
         dismiss_until_datetime = datetime.datetime.strptime(
             dismiss_until, "%Y-%m-%dT%H:%M:%S.%fZ"
         ).replace(tzinfo=datetime.timezone.utc)
@@ -230,14 +215,6 @@ class AlertDto(BaseModel):
         )
         return dismissed
 
-    @validator("description_format")
-    def validate_description_format(cls, description_format):
-        if description_format is None:
-            return None
-        valid_formats = ["markdown", "html"]
-        if description_format not in valid_formats:
-            raise ValueError(f"description_format must be one of {valid_formats}")
-        return description_format
 
     @root_validator(pre=True)
     def set_default_values(cls, values: Dict[str, Any]) -> Dict[str, Any]:
@@ -272,17 +249,26 @@ class AlertDto(BaseModel):
             values["status"] = AlertStatus.FIRING
 
         # this is code duplication of enrichment_helpers.py and should be refactored
-        lastReceived = values.get("lastReceived", None)
-        if not lastReceived:
-            lastReceived = datetime.datetime.now(datetime.timezone.utc).isoformat()
-            values["lastReceived"] = lastReceived
+        last_received = values.get("last_received", None)
+        if not last_received:
+            last_received = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            values["last_received"] = last_received
 
         assignees = values.pop("assignees", None)
         # In some cases (for example PagerDuty) the assignees is list of dicts and we don't handle it atm.
         if assignees and isinstance(assignees, dict):
-            dt = datetime.datetime.fromisoformat(lastReceived)
-            dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
-            assignee = assignees.get(lastReceived) or assignees.get(dt)
+            # Try exact match first
+            assignee = assignees.get(last_received)
+            if not assignee:
+                # Try normalized match
+                try:
+                    dt = datetime.datetime.fromisoformat(last_received.rstrip("Z"))
+                    normalized_dt = dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+                    if not normalized_dt.endswith("Z"):
+                        normalized_dt += "Z"
+                    assignee = assignees.get(normalized_dt)
+                except Exception:
+                    pass
             values["assignee"] = assignee
         values.pop("deletedAt", None)
         return values
@@ -292,35 +278,26 @@ class AlertDto(BaseModel):
     def validate_status(cls, values: Dict[str, Any]) -> Dict[str, Any]:
         # if dismissed, change status to SUPPRESSED
         # note this is happen AFTER validate_dismissed which already consider
-        #   dismissed + dismissUntil
+        #   dismissed + dismiss_until
         # if values.get("dismissed"):
         #     values["status"] = AlertStatus.SUPPRESSED
         return values
 
     class Config:
         extra = Extra.allow
+        allow_population_by_field_name = True
         schema_extra = {
             "examples": [
                 {
                     "id": "1234",
                     "name": "Pod 'api-service-production' lacks memory",
                     "status": "firing",
-                    "lastReceived": "2021-01-01T00:00:00.000Z",
-                    "environment": "production",
-                    "duplicateReason": None,
-                    "service": "backend",
+                    "last_received": "2021-01-01T00:00:00.000Z",
+                    "duplicate_reason": None,
                     "source": ["prometheus"],
                     "message": "The pod 'api-service-production' lacks memory causing high error rate",
                     "description": "Due to the lack of memory, the pod 'api-service-production' is experiencing high error rate",
                     "severity": "critical",
-                    "pushed": True,
-                    "url": "https://www.keephq.dev?alertId=1234",
-                    "labels": {
-                        "pod": "api-service-production",
-                        "region": "us-east-1",
-                        "cpu": "88",
-                        "memory": "100Mi",
-                    },
                     "ticket_url": "https://www.keephq.dev?enrichedTicketId=456",
                     "fingerprint": "1234",
                 }
@@ -337,22 +314,27 @@ class AlertWithIncidentLinkMetadataDto(AlertDto):
     is_created_by_ai: bool = False
 
     @classmethod
-    def from_db_instance(cls, db_alert, db_alert_to_incident):
+    def from_db_instance(cls, db_alert, db_alert_to_incident, payload=None):
+        # Accept a pre-merged payload (with enrichments applied) so callers
+        # don't silently lose enrichment overrides like resolved status.
+        if payload is None:
+            payload = db_alert.dict()
+
         return cls(
             is_created_by_ai=db_alert_to_incident.is_created_by_ai,
-            **db_alert.event,
+            **payload,
         )
 
 
 class DeleteRequestBody(BaseModel):
     fingerprint: str
-    lastReceived: str
+    last_received: str = Field(alias="lastReceived")
     restore: bool = False
 
 
 class DismissRequestBody(BaseModel):
     fingerprint: str
-    dismissUntil: str
+    dismiss_until: str
     dismissComment: str
     restore: bool = False
 
