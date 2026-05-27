@@ -323,6 +323,9 @@ class BaseProvider(metaclass=abc.ABCMeta):
                 "action_type": ActionType.WORKFLOW_ENRICH,
                 "action_callee": "system",
                 "audit_enabled": audit_enabled,
+                # Route incident enrichment to the legacy AlertEnrichment JSONB
+                # path; alerts use the typed LastAlert columns (Phase 2).
+                "entity_type": entity_type,
             }
 
             if _enrichments:

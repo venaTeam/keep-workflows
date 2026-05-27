@@ -656,6 +656,7 @@ class EnrichmentsBl:
         action_description: str,
         dispose_on_new_alert=False,
         audit_enabled=True,
+        entity_type: str = "alert",
     ):
         self.logger.debug(
             "enriching multiple fingerprints",
@@ -664,8 +665,13 @@ class EnrichmentsBl:
         # Phase 2: "dispose on new alert" is modeled by the status_disposable
         # typed column instead of disposable_* JSON keys. When a status is being
         # set with dispose_on_new_alert, flag it so set_last_alert clears it on
-        # the next non-resolved re-fire.
-        if dispose_on_new_alert and "status" in enrichments:
+        # the next non-resolved re-fire. ALERT-only — incidents keep arbitrary
+        # JSONB keys untouched.
+        if (
+            entity_type != "incident"
+            and dispose_on_new_alert
+            and "status" in enrichments
+        ):
             enrichments = {**enrichments, "status_disposable": True}
         batch_enrich(
             self.tenant_id,
@@ -676,6 +682,7 @@ class EnrichmentsBl:
             action_description,
             audit_enabled=audit_enabled,
             session=self.db_session,
+            entity_type=entity_type,
         )
 
     def enrich_entity(
@@ -689,13 +696,16 @@ class EnrichmentsBl:
         dispose_on_new_alert=False,
         force=False,
         audit_enabled=True,
+        entity_type: str = "alert",
     ):
         """
         should_exist = False only in mapping where the alert is not yet in elastic
         action_type = AlertActionType - the action type of the enrichment
         action_callee = the action callee of the enrichment
+        entity_type = "alert" (default, typed LastAlert columns) or "incident"
+            (legacy AlertEnrichment JSONB; kept until Phase 3)
 
-        Enrich the alert with extraction and mapping rules
+        Enrich the entity with extraction and mapping rules
         """
         # enrich db
         if isinstance(fingerprint, UUID):
@@ -703,13 +713,21 @@ class EnrichmentsBl:
                 fingerprint, self.db_session.bind.dialect
             )
         self.logger.debug(
-            "enriching alert db",
-            extra={"fingerprint": fingerprint, "tenant_id": self.tenant_id},
+            "enriching entity db",
+            extra={
+                "fingerprint": fingerprint,
+                "tenant_id": self.tenant_id,
+                "entity_type": entity_type,
+            },
         )
         # Phase 2: "dispose on new alert" is modeled by the status_disposable
-        # typed column instead of disposable_* JSON keys. Flag a disposable
-        # status so set_last_alert clears it on the next non-resolved re-fire.
-        if dispose_on_new_alert and "status" in enrichments:
+        # typed column instead of disposable_* JSON keys. ALERT-only — incidents
+        # keep arbitrary JSONB keys untouched.
+        if (
+            entity_type != "incident"
+            and dispose_on_new_alert
+            and "status" in enrichments
+        ):
             enrichments = {**enrichments, "status_disposable": True}
 
         enrich_alert_db(
@@ -722,6 +740,7 @@ class EnrichmentsBl:
             session=self.db_session,
             force=force,
             audit_enabled=audit_enabled,
+            entity_type=entity_type,
         )
 
         self.logger.debug(
