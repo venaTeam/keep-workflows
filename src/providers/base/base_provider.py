@@ -335,10 +335,14 @@ class BaseProvider(metaclass=abc.ABCMeta):
 
             # todo: incidents do not have disposable enrichments
             if disposable_enrichments and entity_type == "alert":
-                # enrich with disposable enrichments
-                enrichments_bl.disposable_enrich_entity(
+                # Phase 2: disposable enrichments route through the typed enrich
+                # path with dispose_on_new_alert=True, which sets the
+                # status_disposable column so set_last_alert clears the status on
+                # the next non-resolved re-fire.
+                enrichments_bl.enrich_entity(
                     enrichments=disposable_enrichments,
                     action_description=f"Workflow enriched the {entity_type} with {disposable_enrichment_string}",
+                    dispose_on_new_alert=True,
                     **common_kwargs,
                 )
 
