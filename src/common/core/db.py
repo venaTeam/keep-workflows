@@ -5643,8 +5643,16 @@ def get_last_alert_by_fingerprint(
 
 
 def set_last_alert(
-    tenant_id: str, alert: Alert, session: Optional[Session] = None, max_retries=3
+    tenant_id: str,
+    alert: Alert,
+    session: Optional[Session] = None,
+    max_retries=3,
+    tracking: dict | None = None,
 ) -> None:
+    # Phase 2: `tracking` carries the system tracking fields (last_received,
+    # firing_counter, unresolved_counter, started_at, firing_start_time,
+    # firing_start_time_since_last_resolved) that used to live on Alert.
+    # None for a key (or tracking=None) leaves the LastAlert column unchanged.
     fingerprint = alert.fingerprint
     logger.info(f"Setting last alert for `{fingerprint}`")
     with existed_or_new_session(session) as session:
@@ -5679,20 +5687,46 @@ def set_last_alert(
                     last_alert.timestamp = alert.timestamp
                     last_alert.alert_id = alert.id
                     last_alert.alert_hash = alert.alert_hash
+
+                    # Phase 2: write relocated system tracking columns.
+                    if tracking:
+                        for _key, _val in tracking.items():
+                            if _val is not None:
+                                setattr(last_alert, _key, _val)
+
+                    # Phase 2: status / dismiss clearing on re-fire vs resolve.
+                    resolved = alert.status == AlertStatus.RESOLVED.value
+                    if not resolved:
+                        if last_alert.status_disposable:
+                            last_alert.status = None
+                            last_alert.status_disposable = False
+                    else:
+                        if last_alert.dismiss_mode not in (
+                            "permanent",
+                            "dismiss_until",
+                        ):
+                            last_alert.status = None
+                            last_alert.dismiss_mode = None
+                            last_alert.dismissed_until = None
+
                     session.add(last_alert)
 
                 elif not last_alert:
                     logger.info(f"No last alert for `{fingerprint}`, creating new")
-                    session.add(
-                        LastAlert(
-                            tenant_id=tenant_id,
-                            fingerprint=alert.fingerprint,
-                            timestamp=alert.timestamp,
-                            first_timestamp=alert.timestamp,
-                            alert_id=alert.id,
-                            alert_hash=alert.alert_hash,
-                        )
+                    new_last_alert = LastAlert(
+                        tenant_id=tenant_id,
+                        fingerprint=alert.fingerprint,
+                        timestamp=alert.timestamp,
+                        first_timestamp=alert.timestamp,
+                        alert_id=alert.id,
+                        alert_hash=alert.alert_hash,
                     )
+                    # Phase 2: write relocated system tracking columns.
+                    if tracking:
+                        for _key, _val in tracking.items():
+                            if _val is not None:
+                                setattr(new_last_alert, _key, _val)
+                    session.add(new_last_alert)
 
                 session.commit()
             except IntegrityError as ex:
