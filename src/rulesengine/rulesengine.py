@@ -126,9 +126,27 @@ class RulesEngine:
                                 event.fingerprint,
                                 status=AlertStatus.RESOLVED.value,
                             )
-                            if alerts_solved and any(
-                                event.last_received < solved_alert.last_received
-                                for solved_alert in alerts_solved
+                            # Phase 2: Alert.last_received was relocated to
+                            # LastAlert; compare against the per-occurrence
+                            # Alert.timestamp instead.
+                            import dateutil.parser
+
+                            try:
+                                event_received = dateutil.parser.isoparse(
+                                    event.last_received
+                                )
+                            except (ValueError, TypeError):
+                                event_received = None
+                            if (
+                                event_received is not None
+                                and alerts_solved
+                                and any(
+                                    event_received
+                                    < solved_alert.timestamp.replace(
+                                        tzinfo=event_received.tzinfo
+                                    )
+                                    for solved_alert in alerts_solved
+                                )
                             ):
                                 creation_allowed = False
                         incident, send_created_event = self._get_or_create_incident(

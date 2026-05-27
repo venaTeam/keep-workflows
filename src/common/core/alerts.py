@@ -434,8 +434,8 @@ def query_last_alerts(tenant_id, query: QueryDto) -> Tuple[list[Alert], int]:
             # AlertEnrichment join + catch-all `*` JSON map. Left intact for now
             # because the alertenrichment table survives Phase 2 (dropped in
             # Phase 3), so CEL filtering off the JSON column still functions.
-            if not alert.started_at:
-                alert.started_at = str(alert_data[2])
+            # Phase 2: started_at moved to LastAlert (selected as alert_data[2] =
+            # lastalert.first_timestamp); the DTO builder sources it from there.
             alerts.append(alert)
 
         return alerts, total_count

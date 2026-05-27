@@ -1930,24 +1930,12 @@ def get_last_alerts(
         alerts_with_start = session.execute(stmt).all()
 
         # Process results based on dialect
+        # Phase 2: started_at and incident were dropped from Alert; the DTO
+        # builder now sources started_at from LastAlert and incident from the
+        # alert._incidents relationship, so we no longer stamp them here.
         alerts = []
         for alert_data in alerts_with_start:
             alert = alert_data[0]
-            started_at = alert_data[1]
-            if not alert.started_at:
-                alert.started_at = str(started_at)
-
-            if with_incidents:
-                incident_id = alert_data[2]
-                if dialect_name == "sqlite":
-                    # Parse JSON array for SQLite
-                    incident_id = json.loads(incident_id)[0] if incident_id else None
-                elif dialect_name in ("mysql", "postgresql"):
-                    # Split comma-separated string for MySQL and PostgreSQL
-                    incident_id = incident_id.split(",")[0] if incident_id else None
-
-                alert.incident = str(incident_id) if incident_id else None
-
             alerts.append(alert)
 
         return alerts
@@ -4509,7 +4497,9 @@ def add_alerts_to_incident(
             else:
                 alerts_count = alerts_data_for_incident["count"]
 
-            last_received_field = Alert.last_received
+            # Phase 2: Alert.last_received moved to LastAlert; use the
+            # per-occurrence Alert.timestamp for incident start/last-seen bounds.
+            last_received_field = Alert.timestamp
 
             started_at, last_seen_at = session.exec(
                 select(func.min(last_received_field), func.max(last_received_field))
@@ -4736,7 +4726,9 @@ def remove_alerts_to_incident_by_incident_id(
             if source not in sources_existed
         ]
 
-        last_received_field = Alert.last_received
+        # Phase 2: Alert.last_received moved to LastAlert; use the per-occurrence
+        # Alert.timestamp for incident start/last-seen bounds.
+        last_received_field = Alert.timestamp
 
         started_at, last_seen_at = session.exec(
             select(func.min(last_received_field), func.max(last_received_field))
