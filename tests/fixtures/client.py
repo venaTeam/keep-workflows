@@ -78,26 +78,33 @@ def create_alert(db_session):
         alert_data = {
             "fingerprint": fingerprint,
             "status": status.value if hasattr(status, "value") else status,
-            "last_received": alert_timestamp.isoformat(),
-            "firing_start_time": firing_start_time.isoformat() if firing_start_time else None,
-            "name": "test-alert"
+            "name": "test-alert",
         }
         alert_data.update(extra_event_data)
-        
-        # Extract native fields and put others in extra_data
-        native_fields = [
-            "id", "tenant_id", "timestamp", "provider_type", "provider_id",
-            "application", "object", "node_name", "severity", "message",
-            "operator", "time_created", "network", "timezone", "custom_key",
-            "expiry_in_minutes", "source", "service", "key_field", "name",
-            "status", "description", "last_received", "is_full_duplicate",
-            "is_partial_duplicate", "duplicate_reason", "note", "assignee",
-            "incident", "dismiss_until", "dismissed", "enriched_fields",
-            "started_at", "firing_counter", "unresolved_counter", "firing_start_time",
-            "firing_start_time_since_last_resolved", "extra_data", "fingerprint",
-            "alert_hash"
-        ]
-        
+
+        # Phase 2: tracking + user enrichment state live on LastAlert; only
+        # immutable provider columns live on Alert. Keys not matching either are
+        # dropped (no JSONB overflow in the strict schema).
+        alert_columns = set(Alert.__fields__.keys())
+        # Typed user-enrichment + system-tracking columns on LastAlert.
+        lastalert_user_columns = {
+            "status",
+            "status_disposable",
+            "dismiss_mode",
+            "dismissed_until",
+            "assignee",
+            "note",
+            "deleted",
+        }
+        lastalert_tracking_columns = {
+            "last_received",
+            "firing_counter",
+            "unresolved_counter",
+            "started_at",
+            "firing_start_time",
+            "firing_start_time_since_last_resolved",
+        }
+
         alert_init_data = {
             "tenant_id": SINGLE_TENANT_UUID,
             "provider_type": "mock",
@@ -105,22 +112,26 @@ def create_alert(db_session):
             "fingerprint": fingerprint,
             "timestamp": alert_timestamp,
         }
-        extra_data = {}
         for k, v in alert_data.items():
-            if k in native_fields:
+            # `status` is a provider value on Alert and also a user override on
+            # LastAlert; the fixture sets the provider value on Alert.
+            if k in alert_columns:
                 alert_init_data[k] = v
-            else:
-                extra_data[k] = v
-        
-        if extra_data:
-            alert_init_data["extra_data"] = extra_data
 
         alert = Alert(**alert_init_data)
         db_session.add(alert)
         db_session.flush()
-        
-        # 3. Update LastAlert with the real alert ID
+
+        # 3. Update LastAlert with the real alert ID + relocated tracking fields.
         last_alert.alert_id = alert.id
+        last_alert.alert_hash = alert.alert_hash
+        last_alert.last_received = alert_timestamp
+        if firing_start_time:
+            last_alert.firing_start_time = firing_start_time.isoformat()
+        for k, v in alert_data.items():
+            if k in lastalert_user_columns or k in lastalert_tracking_columns:
+                setattr(last_alert, k, v)
+        db_session.add(last_alert)
         db_session.commit()
         return alert
         
