@@ -1311,6 +1311,10 @@ class _LastAlertEnrichmentView:
             return {}
         data: dict = {}
         for key in LASTALERT_ENRICH_COLUMNS:
+            # status_disposable is internal clearing state, not user-facing —
+            # never surfaced on the read view / DTO.
+            if key == "status_disposable":
+                continue
             value = getattr(last_alert, key, None)
             if value is not None:
                 data[key] = value
@@ -5331,9 +5335,8 @@ def is_all_alerts_in_status(
         return False
 
     with existed_or_new_session(session) as session:
-        enriched_status_field = get_json_extract_field(
-            session, AlertEnrichment.enrichments, "status"
-        )
+        # Phase 2: enriched status override lives on the typed LastAlert column.
+        enriched_status_field = LastAlert.status
         status_field = Alert.status
 
         subquery = (
@@ -5343,13 +5346,6 @@ def is_all_alerts_in_status(
             )
             .select_from(LastAlert)
             .join(Alert, LastAlert.alert_id == Alert.id)
-            .outerjoin(
-                AlertEnrichment,
-                and_(
-                    Alert.tenant_id == AlertEnrichment.tenant_id,
-                    Alert.fingerprint == AlertEnrichment.alert_fingerprint,
-                ),
-            )
         )
 
         if fingerprints:
@@ -5410,26 +5406,25 @@ def is_edge_incident_alert_resolved(
         return False
 
     with existed_or_new_session(session) as session:
-        enriched_status_field = get_json_extract_field(
-            session, AlertEnrichment.enrichments, "status"
-        )
+        # Phase 2: enriched status override lives on the typed LastAlert column.
+        enriched_status_field = LastAlert.status
         status_field = Alert.status
 
         finerprint, enriched_status, status = session.exec(
             select(Alert.fingerprint, enriched_status_field, status_field)
             .select_from(Alert)
-            .outerjoin(
-                AlertEnrichment,
-                and_(
-                    Alert.tenant_id == AlertEnrichment.tenant_id,
-                    Alert.fingerprint == AlertEnrichment.alert_fingerprint,
-                ),
-            )
             .join(
                 LastAlertToIncident,
                 and_(
                     LastAlertToIncident.tenant_id == Alert.tenant_id,
                     LastAlertToIncident.fingerprint == Alert.fingerprint,
+                ),
+            )
+            .join(
+                LastAlert,
+                and_(
+                    LastAlert.tenant_id == Alert.tenant_id,
+                    LastAlert.fingerprint == Alert.fingerprint,
                 ),
             )
             .where(LastAlertToIncident.incident_id == incident.id)

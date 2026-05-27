@@ -5,13 +5,34 @@ from typing import Optional
 from opentelemetry import trace
 from sqlmodel import Session
 
+from sqlmodel import select
+
 from src.common.core.db import existed_or_new_session
 from src.common.models.alert import (
     AlertDto,
     AlertStatus,
     AlertWithIncidentLinkMetadataDto,
 )
-from src.common.models.db.alert import Alert, LastAlertToIncident
+from src.common.models.db.alert import Alert, LastAlert, LastAlertToIncident
+
+# Phase 2: user enrichment state lives on these typed LastAlert columns.
+_LASTALERT_USER_COLUMNS = (
+    "status",
+    "dismiss_mode",
+    "dismissed_until",
+    "assignee",
+    "note",
+    "deleted",
+)
+# Phase 2: system tracking fields relocated from Alert to LastAlert.
+_LASTALERT_TRACKING_COLUMNS = (
+    "last_received",
+    "firing_counter",
+    "unresolved_counter",
+    "started_at",
+    "firing_start_time",
+    "firing_start_time_since_last_resolved",
+)
 from src.common.models.incident import IncidentDto
 
 tracer = trace.get_tracer(__name__)
@@ -201,8 +222,27 @@ def convert_db_alerts_to_dto_alerts(
     Returns:
         list[AlertDto | AlertWithIncidentLinkMetadataDto]: The enriched alerts.
     """
+    # Phase 2: `with_alert_instance_enrichment` no longer has a destination —
+    # per-occurrence enrichment snapshots are dropped; occurrences carry only
+    # provider data. The parameter is retained for signature compatibility.
     with existed_or_new_session(session) as session:
         alerts_dto = []
+
+        # Batch-load the LastAlert rows for all fingerprints in one query so we
+        # can source user enrichment state + relocated tracking fields from the
+        # typed columns instead of the removed alert_enrichment relationship.
+        fingerprints = []
+        for _object in alerts:
+            _alert = _object if isinstance(_object, Alert) else _object[0]
+            if _alert.fingerprint:
+                fingerprints.append(_alert.fingerprint)
+        last_alerts_by_fp = {}
+        if fingerprints:
+            for la in session.exec(
+                select(LastAlert).where(LastAlert.fingerprint.in_(set(fingerprints)))
+            ).all():
+                last_alerts_by_fp[la.fingerprint] = la
+
         with tracer.start_as_current_span("alerts_enrichment"):
             # enrich the alerts with the enrichment data
             for _object in alerts:
@@ -212,11 +252,15 @@ def convert_db_alerts_to_dto_alerts(
                 else:
                     alert, alert_to_incident = _object
 
+                last_alert = last_alerts_by_fp.get(alert.fingerprint)
                 enrichments = {}
-                if with_alert_instance_enrichment and alert.alert_instance_enrichment:
-                    enrichments = alert.alert_instance_enrichment.enrichments
-                elif alert.alert_enrichment and not with_alert_instance_enrichment:
-                    enrichments = alert.alert_enrichment.enrichments
+                if last_alert is not None:
+                    for _col in _LASTALERT_USER_COLUMNS:
+                        _val = getattr(last_alert, _col, None)
+                        if _val is not None:
+                            enrichments[_col] = _val
+                    # Derived backward-compat flag.
+                    enrichments["dismissed"] = last_alert.status == "suppressed"
 
                 alert_payload = alert.dict()
                 # Ensure ID is a string for AlertDto
@@ -224,6 +268,14 @@ def convert_db_alerts_to_dto_alerts(
                 # source is a list in AlertDto but a string in Alert (SQLModel)
                 if alert_payload.get("source") and isinstance(alert_payload["source"], str):
                     alert_payload["source"] = [alert_payload["source"]]
+
+                # Layer the relocated tracking fields from LastAlert onto the
+                # payload (Alert no longer carries them).
+                if last_alert is not None:
+                    for _col in _LASTALERT_TRACKING_COLUMNS:
+                        _val = getattr(last_alert, _col, None)
+                        if _val is not None:
+                            alert_payload[_col] = _val
 
                 alert_payload.update(enrichments)
 
@@ -244,8 +296,9 @@ def convert_db_alerts_to_dto_alerts(
                     else:
                         alert_dto = AlertDto(**alert_payload)
 
-                    if enrichments:
-                        parse_and_enrich_deleted_and_assignees(alert_dto, enrichments)
+                    # Phase 2: `deleted` and `assignee` are read directly from the
+                    # typed LastAlert columns (already merged into alert_payload);
+                    # the legacy timestamp-list parsing is no longer needed.
 
                 except Exception:
                     # should never happen but just in case

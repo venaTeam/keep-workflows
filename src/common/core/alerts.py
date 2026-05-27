@@ -421,7 +421,19 @@ def query_last_alerts(tenant_id, query: QueryDto) -> Tuple[list[Alert], int]:
         alerts = []
         for alert_data in alerts_with_start:
             alert: Alert = alert_data[0]
-            alert.alert_enrichment = alert_data[1]
+            # Phase 2: the alert_enrichment relationship was removed. The DTO
+            # builder (convert_db_alerts_to_dto_alerts) now sources user
+            # enrichment + tracking state directly from the typed LastAlert
+            # columns, so the AlertEnrichment row selected here is no longer
+            # attached to the Alert.
+            # PHASE2-TODO (AG-5 equivalent): this query layer + the
+            # `alert_field_configurations` CEL mapping still reference
+            # `alertenrichment.enrichments` JSON for status/assignee/etc. Rewrite
+            # the field config to map status/assignee/note/dismiss_mode/
+            # dismissed_until/deleted to lastalert.* columns and drop the
+            # AlertEnrichment join + catch-all `*` JSON map. Left intact for now
+            # because the alertenrichment table survives Phase 2 (dropped in
+            # Phase 3), so CEL filtering off the JSON column still functions.
             if not alert.started_at:
                 alert.started_at = str(alert_data[2])
             alerts.append(alert)
