@@ -5,6 +5,7 @@ import re
 from typing import List, Optional
 
 import celpy
+import dateutil.parser
 import celpy.c7nlib
 import celpy.celparser
 import celpy.celtypes
@@ -129,8 +130,6 @@ class RulesEngine:
                             # Phase 2: Alert.last_received was relocated to
                             # LastAlert; compare against the per-occurrence
                             # Alert.timestamp instead.
-                            import dateutil.parser
-
                             try:
                                 event_received = dateutil.parser.isoparse(
                                     event.last_received

@@ -33,7 +33,6 @@ from src.common.models.action_type import ActionType
 from src.common.models.alert import AlertDto, AlertSeverity, AlertStatus
 from src.common.models.db.topology import TopologyServiceInDto
 from src.common.models.incident import IncidentDto
-from src.common.utils.enrichment_helpers import parse_and_enrich_deleted_and_assignees
 from src.contextmanager.contextmanager import ContextManager
 from src.providers.models.provider_config import ProviderConfig, ProviderScope
 from src.providers.models.provider_method import ProviderMethod
@@ -619,16 +618,24 @@ class BaseProvider(metaclass=abc.ABCMeta):
                         alert_enrichment.alert_fingerprint
                     )
                     for alert_to_enrich in alerts_to_enrich:
-                        parse_and_enrich_deleted_and_assignees(
-                            alert_to_enrich, alert_enrichment.enrichments
-                        )
-                        for enrichment in alert_enrichment.enrichments:
-                            # set the enrichment
-                            setattr(
-                                alert_to_enrich,
-                                enrichment,
-                                alert_enrichment.enrichments[enrichment],
-                            )
+                        # Phase 2: alert_enrichment.enrichments is the typed
+                        # user-state dict built from LastAlert columns
+                        # (status/assignee/note/dismiss_mode/dismissed_until/
+                        # deleted + derived `dismissed`). `deleted` and
+                        # `assignee` are direct values now, NOT the legacy
+                        # timestamp-list/dict — so the old
+                        # `parse_and_enrich_deleted_and_assignees` would
+                        # TypeError here. `dismissed_until` arrives as a
+                        # datetime from the typed column but AlertDto expects a
+                        # str | None — coerce to ISO so downstream serialization
+                        # stays well-typed (mirrors api-gateway base_provider).
+                        for key, value in alert_enrichment.enrichments.items():
+                            if (
+                                key == "dismissed_until"
+                                and isinstance(value, datetime.datetime)
+                            ):
+                                value = value.isoformat()
+                            setattr(alert_to_enrich, key, value)
 
         return grouped_alerts
 
