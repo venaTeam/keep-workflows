@@ -326,6 +326,11 @@ class BaseProvider(metaclass=abc.ABCMeta):
                 # Route incident enrichment to the legacy AlertEnrichment JSONB
                 # path; alerts use the typed LastAlert columns (Phase 2).
                 "entity_type": entity_type,
+                # Workflow YAML actions emit arbitrary user-defined keys; the
+                # strict typed schema can only persist the known LastAlert
+                # columns, so non-route system writes discard unknowns with a
+                # warning instead of raising 422 (incident path ignores strict).
+                "strict": False,
             }
 
             if _enrichments:

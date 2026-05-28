@@ -351,3 +351,122 @@ def test_get_enrichments_builds_dict_from_columns(db_session):
     # session-scoped read returns the same shape
     view = get_enrichment_with_session(db_session, SINGLE_TENANT_UUID, "fp-read")
     assert view.enrichments["assignee"] == "bob"
+
+
+# ============================================================================
+# Phase 2 review-pass regressions (parity with keep-api-gateway fixes)
+# ============================================================================
+
+
+def test_dismissed_false_preserves_explicit_status(db_session):
+    """Undismiss with an explicit caller status must NOT clobber the status.
+
+    Regression for api-gateway commit f1b181c: the change-status modal moving
+    suppressed -> acknowledged emits `{dismissed: False, status: "acknowledged"}`.
+    `_translate_dismissed` must `setdefault("status", None)`, not assign None.
+    """
+    _, la = _make_alert(db_session, "fp-undismiss-status")
+    la.status = "suppressed"
+    la.dismiss_mode = "permanent"
+    db_session.add(la)
+    db_session.commit()
+
+    _enrich_entity(
+        db_session,
+        SINGLE_TENANT_UUID,
+        "fp-undismiss-status",
+        {"dismissed": False, "status": "acknowledged"},
+        action_type=ActionType.GENERIC_ENRICH,
+        action_callee="alice",
+        action_description="change-status from suppressed",
+    )
+    la = (
+        db_session.query(LastAlert)
+        .filter_by(fingerprint="fp-undismiss-status")
+        .one()
+    )
+    assert la.status == "acknowledged"
+    assert la.dismiss_mode is None
+    assert la.dismissed_until is None
+
+
+def test_strict_false_discards_unknown_keys(db_session):
+    """System writes (mapping/extraction/workflow YAML) emit arbitrary keys.
+
+    With strict=False they must be discarded with a warning instead of raising
+    (parity with keep-api-gateway `normalize_enrichments(strict=False)`).
+    """
+    _make_alert(db_session, "fp-strict-false")
+    # Should not raise: arbitrary keys are dropped, known keys still apply.
+    result = _enrich_entity(
+        db_session,
+        SINGLE_TENANT_UUID,
+        "fp-strict-false",
+        {"ticket_url": "https://example", "assignee": "bob"},
+        action_type=ActionType.MAPPING_RULE_ENRICH,
+        action_callee="system",
+        action_description="mapping enrich",
+        strict=False,
+    )
+    assert result is not None
+    la = (
+        db_session.query(LastAlert)
+        .filter_by(fingerprint="fp-strict-false")
+        .one()
+    )
+    # known key applied, unknown key dropped
+    assert la.assignee == "bob"
+
+
+def test_convert_db_alerts_to_dto_filters_by_tenant(db_session):
+    """convert_db_alerts_to_dto_alerts must scope LastAlert lookup by tenant.
+
+    Two tenants sharing a fingerprint must not leak each other's enrichments.
+    """
+    from src.common.utils.enrichment_helpers import convert_db_alerts_to_dto_alerts
+
+    OTHER_TENANT = "other-tenant-id"
+    # tenant A: assignee=alice
+    alert_a, la_a = _make_alert(db_session, "shared-fp")
+    la_a.assignee = "alice"
+    db_session.add(la_a)
+
+    # tenant B: assignee=bob, same fingerprint
+    ts = datetime.now(tz=timezone.utc) + timedelta(seconds=1)
+    # Need a Tenant row for the FK; reuse SINGLE_TENANT_UUID is the only one in
+    # the fixture, so simulate the cross-tenant leak by directly inserting a
+    # LastAlert row under a different tenant_id via raw insert (skip FK):
+    # We use SQLAlchemy ORM `add` - the test DB is sqlite with no FK enforcement
+    # by default; if it fails, fall back to verifying the query itself.
+    from src.common.models.db.tenant import Tenant
+
+    db_session.add(Tenant(id=OTHER_TENANT, name="other"))
+    db_session.flush()
+    alert_b = Alert(
+        tenant_id=OTHER_TENANT,
+        provider_type="mock",
+        provider_id="mock",
+        fingerprint="shared-fp",
+        timestamp=ts,
+        status=AlertStatus.FIRING.value,
+        name="t",
+        alert_hash="h-other",
+    )
+    db_session.add(alert_b)
+    db_session.flush()
+    la_b = LastAlert(
+        tenant_id=OTHER_TENANT,
+        fingerprint="shared-fp",
+        alert_id=alert_b.id,
+        timestamp=ts,
+        first_timestamp=ts,
+        alert_hash="h-other",
+        assignee="bob",
+    )
+    db_session.add(la_b)
+    db_session.commit()
+
+    # Convert only tenant A's alert -> must not pick up tenant B's "bob".
+    dtos = convert_db_alerts_to_dto_alerts([alert_a], session=db_session)
+    assert len(dtos) == 1
+    assert dtos[0].assignee == "alice"

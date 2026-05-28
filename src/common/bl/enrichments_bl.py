@@ -256,6 +256,10 @@ class EnrichmentsBl:
                     action_callee="system",
                     action_description=f"Alert enriched with extraction from rule `{rule.name}`",
                     should_exist=False,
+                    # Phase 2: extraction rules emit arbitrary regex-group keys
+                    # that have no destination in the strict typed schema. System
+                    # write -> discard unknown keys with a warning instead of 422.
+                    strict=False,
                 )
                 self._add_enrichment_log(
                     "Event enriched with extraction rule",
@@ -490,6 +494,10 @@ class EnrichmentsBl:
                 action_callee="system",
                 action_description=f"Alert enriched with mapping from rule `{rule.name}`",
                 should_exist=False,
+                # Phase 2: mapping rules emit arbitrary user-defined keys that
+                # have no destination in the strict typed schema. System write
+                # -> discard unknown keys with a warning instead of 422.
+                strict=False,
             )
 
             self._add_enrichment_log(
@@ -657,6 +665,7 @@ class EnrichmentsBl:
         dispose_on_new_alert=False,
         audit_enabled=True,
         entity_type: str = "alert",
+        strict: bool = True,
     ):
         self.logger.debug(
             "enriching multiple fingerprints",
@@ -683,6 +692,7 @@ class EnrichmentsBl:
             audit_enabled=audit_enabled,
             session=self.db_session,
             entity_type=entity_type,
+            strict=strict,
         )
 
     def enrich_entity(
@@ -697,6 +707,7 @@ class EnrichmentsBl:
         force=False,
         audit_enabled=True,
         entity_type: str = "alert",
+        strict: bool = True,
     ):
         """
         should_exist = False only in mapping where the alert is not yet in elastic
@@ -741,6 +752,7 @@ class EnrichmentsBl:
             force=force,
             audit_enabled=audit_enabled,
             entity_type=entity_type,
+            strict=strict,
         )
 
         self.logger.debug(

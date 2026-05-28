@@ -1333,21 +1333,27 @@ def _translate_dismissed(enrichments: dict) -> dict:
         dismissed = result.pop("dismissed")
         dismiss_until = result.pop("dismiss_until", None)
         if dismissed:
-            result["status"] = "suppressed"
+            # An explicit caller status wins over the implied 'suppressed'
+            # (mirrors the setdefault semantics used on the undismiss branch).
+            result.setdefault("status", "suppressed")
             if dismiss_until:
                 result["dismiss_mode"] = "dismiss_until"
                 result["dismissed_until"] = dismiss_until
             else:
                 result.setdefault("dismiss_mode", "permanent")
         else:
-            result["status"] = None
+            # Undismiss: clear dismiss state; revert status to provider value
+            # UNLESS the caller supplied an explicit status (e.g. change-status
+            # modal moving suppressed -> acknowledged). Mirrors keep-api-gateway
+            # commit f1b181c.
+            result.setdefault("status", None)
             result["dismiss_mode"] = None
             result["dismissed_until"] = None
     elif "dismiss_until" in result:
         # dismiss_until without explicit dismissed flag → dismiss_until mode
         dismiss_until = result.pop("dismiss_until")
         if dismiss_until:
-            result["status"] = "suppressed"
+            result.setdefault("status", "suppressed")
             result["dismiss_mode"] = "dismiss_until"
             result["dismissed_until"] = dismiss_until
     return result
@@ -1546,6 +1552,32 @@ def _batch_enrich_incident_alertenrichment(
     ).all()
 
 
+def _normalize_alert_enrichments(enrichments: dict, strict: bool) -> dict:
+    """Translate legacy keys and handle unknown keys for the typed-column path.
+
+    - Translates `dismissed`/`dismiss_until` -> `status`/`dismiss_mode`/`dismissed_until`.
+    - Unknown keys:
+        - strict=True (route-driven): raise ValueError (-> 422 at the route).
+        - strict=False (system writes — mapping/extraction/workflow YAML enrich):
+          discard with a warning. Mirrors keep-api-gateway `normalize_enrichments`.
+    """
+    translated = _translate_dismissed(enrichments)
+    unknown = set(translated.keys()) - LASTALERT_ENRICH_COLUMNS
+    if unknown:
+        if strict:
+            raise ValueError(
+                "Unknown enrichment key(s) not allowed in the strict schema: "
+                f"{sorted(unknown)}"
+            )
+        logger.warning(
+            "phase2.discard_unknown_enrichment_keys",
+            extra={"keys": sorted(unknown)},
+        )
+        for key in unknown:
+            translated.pop(key, None)
+    return translated
+
+
 def _enrich_entity(
     session,
     tenant_id,
@@ -1557,14 +1589,17 @@ def _enrich_entity(
     force=False,
     audit_enabled=True,
     entity_type: str = "alert",
+    strict: bool = True,
 ):
     """
     Enrich an entity (alert or incident).
 
     ALERT (entity_type == "alert", default): user state is written to typed
-    LastAlert columns. Legacy `dismissed`/`dismiss_until` keys are translated,
-    unknown keys are rejected (strict schema), and the D1 no-op applies when no
-    LastAlert row exists for the fingerprint.
+    LastAlert columns. Legacy `dismissed`/`dismiss_until` keys are translated;
+    unknown keys are rejected (strict=True, route-driven writes) or discarded
+    with a warning (strict=False, system writes — mapping/extraction/workflow
+    YAML enrich). The D1 no-op applies when no LastAlert row exists for the
+    fingerprint.
 
     INCIDENT (entity_type == "incident"): incident enrichment stays on the legacy
     AlertEnrichment JSONB row (UUID-keyed) until Phase 3 — arbitrary keys are
@@ -1579,6 +1614,8 @@ def _enrich_entity(
             alert path; arbitrary keys for the incident path.
         force (bool): When True, allow erasing the note (note-guard bypass).
         entity_type (str): "alert" (typed columns) or "incident" (AlertEnrichment).
+        strict (bool): When True, unknown keys raise ValueError; when False,
+            they are discarded with a warning. Ignored on the incident path.
     """
     if entity_type == "incident":
         return _enrich_incident_alertenrichment(
@@ -1593,13 +1630,7 @@ def _enrich_entity(
             audit_enabled=audit_enabled,
         )
 
-    # Translate legacy dismiss keys, then validate against the typed column set.
-    translated = _translate_dismissed(enrichments)
-    unknown = set(translated.keys()) - LASTALERT_ENRICH_COLUMNS
-    if unknown:
-        raise ValueError(
-            f"Unknown enrichment key(s) not allowed in the strict schema: {sorted(unknown)}"
-        )
+    translated = _normalize_alert_enrichments(enrichments, strict=strict)
 
     last_alert = get_last_alert_by_fingerprint(
         tenant_id, fingerprint, session, for_update=True
@@ -1667,6 +1698,7 @@ def batch_enrich(
     session=None,
     audit_enabled=True,
     entity_type: str = "alert",
+    strict: bool = True,
 ):
     """
     Batch enrich multiple entities with the same enrichments in a single transaction.
@@ -1707,13 +1739,7 @@ def batch_enrich(
                 audit_enabled=audit_enabled,
             )
 
-    # Translate legacy dismiss keys, then validate against the typed column set.
-    translated = _translate_dismissed(enrichments)
-    unknown = set(translated.keys()) - LASTALERT_ENRICH_COLUMNS
-    if unknown:
-        raise ValueError(
-            f"Unknown enrichment key(s) not allowed in the strict schema: {sorted(unknown)}"
-        )
+    translated = _normalize_alert_enrichments(enrichments, strict=strict)
 
     with existed_or_new_session(session) as session:
         # Load all matching LastAlert rows in a single query.
@@ -1794,6 +1820,7 @@ def enrich_entity(
     force=False,
     audit_enabled=True,
     entity_type: str = "alert",
+    strict: bool = True,
 ):
     with existed_or_new_session(session) as session:
         return _enrich_entity(
@@ -1807,6 +1834,7 @@ def enrich_entity(
             force=force,
             audit_enabled=audit_enabled,
             entity_type=entity_type,
+            strict=strict,
         )
 
 

@@ -228,20 +228,29 @@ def convert_db_alerts_to_dto_alerts(
     with existed_or_new_session(session) as session:
         alerts_dto = []
 
-        # Batch-load the LastAlert rows for all fingerprints in one query so we
-        # can source user enrichment state + relocated tracking fields from the
-        # typed columns instead of the removed alert_enrichment relationship.
-        fingerprints = []
+        # Batch-load the LastAlert rows for all (tenant, fingerprint) pairs in
+        # one query so we can source user enrichment state + relocated tracking
+        # fields from the typed columns instead of the removed alert_enrichment
+        # relationship.
+        #
+        # MUST scope by tenant_id: fingerprints are not globally unique across
+        # tenants, so a fp-only `IN (...)` lookup would leak another tenant's
+        # enrichment state into the DTO (multi-tenant isolation bug).
+        keys = set()
         for _object in alerts:
             _alert = _object if isinstance(_object, Alert) else _object[0]
             if _alert.fingerprint:
-                fingerprints.append(_alert.fingerprint)
-        last_alerts_by_fp = {}
-        if fingerprints:
+                keys.add((_alert.tenant_id, _alert.fingerprint))
+        last_alerts_by_key = {}
+        if keys:
+            tenant_ids = {tid for (tid, _) in keys}
+            fps = {fp for (_, fp) in keys}
             for la in session.exec(
-                select(LastAlert).where(LastAlert.fingerprint.in_(set(fingerprints)))
+                select(LastAlert)
+                .where(LastAlert.tenant_id.in_(tenant_ids))
+                .where(LastAlert.fingerprint.in_(fps))
             ).all():
-                last_alerts_by_fp[la.fingerprint] = la
+                last_alerts_by_key[(la.tenant_id, la.fingerprint)] = la
 
         with tracer.start_as_current_span("alerts_enrichment"):
             # enrich the alerts with the enrichment data
@@ -252,7 +261,9 @@ def convert_db_alerts_to_dto_alerts(
                 else:
                     alert, alert_to_incident = _object
 
-                last_alert = last_alerts_by_fp.get(alert.fingerprint)
+                last_alert = last_alerts_by_key.get(
+                    (alert.tenant_id, alert.fingerprint)
+                )
                 enrichments = {}
                 if last_alert is not None:
                     for _col in _LASTALERT_USER_COLUMNS:
