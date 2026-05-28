@@ -1,0 +1,11 @@
+actions:
+  - name: trigger-console
+    use: '@trigger-console'
+    provider:
+      type: console
+      config: " {{ providers.console-demo }} "
+      with:
+        # Message is always mandatory
+        message: >
+          The disk space of {{ providers.db-server-mock.description }} is about to finish
+          Disk space left: {{ steps.db-no-space.results }}

@@ -1,0 +1,274 @@
+import logging
+from datetime import datetime, timezone
+from typing import Optional
+
+from opentelemetry import trace
+from sqlmodel import Session
+
+from src.common.core.db import existed_or_new_session
+from src.common.models.alert import (
+    AlertDto,
+    AlertStatus,
+    AlertWithIncidentLinkMetadataDto,
+)
+from src.common.models.db.alert import Alert, LastAlertToIncident
+from src.common.models.incident import IncidentDto
+
+tracer = trace.get_tracer(__name__)
+logger = logging.getLogger(__name__)
+
+
+def javascript_iso_format(last_received) -> str:
+    """
+    https://stackoverflow.com/a/63894149/12012756
+    Accepts either an ISO-format string or a datetime (since the ORM column
+    is now TIMESTAMPTZ and may bypass AlertDto's string-coercion validator).
+    """
+    if isinstance(last_received, datetime):
+        dt = last_received
+    else:
+        dt = datetime.fromisoformat(last_received)
+    # Normalize to UTC so the output is canonical "...Z" regardless of input TZ.
+    # Postgres TIMESTAMPTZ returns datetimes in the session TZ (often the server's
+    # local TZ, e.g. +03:00), which would otherwise emit "+03:00" suffix and break
+    # comparisons against enrichments that store canonical UTC "Z" strings.
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def parse_and_enrich_deleted_and_assignees(alert: AlertDto, enrichments: dict):
+    # tb: we'll need to refactor this at some point since its flaky
+    # assignees and deleted are special cases that we need to handle
+    # they are kept as a list of timestamps and we need to check if the
+    # timestamp of the alert is in the list, if it is, it means that the
+    # alert at that specific time was deleted or assigned.
+    #
+    # THIS IS MAINLY BECAUSE WE ALSO HAVE THE PULLED ALERTS,
+    # OTHERWISE, WE COULD'VE JUST UPDATE THE ALERT IN THE DB
+    deleted_last_received = enrichments.get(
+        "deletedAt", enrichments.get("deleted", [])
+    )  # "deleted" is for backward compatibility
+    if javascript_iso_format(alert.last_received) in deleted_last_received:
+        alert.deleted = True
+    assignees: dict = enrichments.get("assignees", {})
+    assignee = assignees.get(alert.last_received) or assignees.get(
+        javascript_iso_format(alert.last_received)
+    )
+    if assignee:
+        alert.assignee = assignee
+
+
+
+
+def calculated_start_firing_time(
+    alert: AlertDto, previous_alert: AlertDto | list[AlertDto]
+) -> str:
+    """
+    Calculate the start firing time of an alert based on the previous alert.
+
+    Args:
+        alert (AlertDto): The alert to calculate the start firing time for.
+        previous_alert (AlertDto): The previous alert.
+
+    Returns:
+        str: The calculated start firing time.
+    """
+    # if the alert is not firing, there is no start firing time
+    if alert.status != AlertStatus.FIRING.value:
+        return None
+    # if this is the first alert, the start firing time is the same as the last received time
+    if not previous_alert:
+        return alert.last_received
+    elif isinstance(previous_alert, list):
+        previous_alert = previous_alert[0]
+    # else, if the previous alert was firing, the start firing time is the same as the previous alert
+    if previous_alert.status == AlertStatus.FIRING.value:
+        return previous_alert.firing_start_time
+    # else, if the previous alert was resolved, the start firing time is the same as the last received time
+    else:
+        return alert.last_received
+
+
+def calculate_firing_time_since_last_resolved(
+    alert: AlertDto, previous_alert: AlertDto | list[AlertDto]
+) -> int:
+    """
+    Calculate the firing counter of an alert based on the previous alert.
+    """
+    # if the alert is resolved, there is no firing time.
+    if alert.status == AlertStatus.RESOLVED.value:
+        return None
+    else:
+        # if there is previous alert, we need to check if it has firing time
+        if previous_alert:
+            if isinstance(previous_alert, list):
+                previous_alert = previous_alert[0]
+            if (
+                previous_alert.status == AlertStatus.RESOLVED.value
+                and alert.status == AlertStatus.FIRING.value
+            ):
+                return alert.last_received
+            # if the previous alert has firing time since last resolved, we need to return it
+            if previous_alert.firing_start_time_since_last_resolved:
+                return previous_alert.firing_start_time_since_last_resolved
+        else:
+            # if there is no previous alert, we need to check if the alert is firing
+            if alert.status == AlertStatus.FIRING.value:
+                return alert.last_received
+            else:
+                return None
+
+
+def calculated_firing_counter(
+    alert: AlertDto, previous_alert: AlertDto | list[AlertDto]
+) -> int:
+    """
+    Calculate the firing counter of an alert based on the previous alert.
+
+    Args:
+        alert (AlertDto): The alert to calculate the firing counter for.
+        previous_alert (AlertDto): The previous alert.
+
+    Returns:
+        int: The calculated firing counter.
+    """
+    # if its an acknowledged alert, the firing counter is 0
+
+    if alert.status == AlertStatus.ACKNOWLEDGED.value:
+        return 0
+
+    # if this is the first alert, the firing counter is 1
+    if not previous_alert:
+        return 1
+    elif isinstance(previous_alert, list):
+        previous_alert = previous_alert[0]
+
+    if previous_alert.status == AlertStatus.ACKNOWLEDGED.value:
+        return 1
+
+    # else, increment counter if the previous alert was firing
+    # NOTE: firing_counter -> 0 only if acknowledged
+    return previous_alert.firing_counter + 1
+
+
+def calculated_unresolved_counter(
+    alert: AlertDto, previous_alert: AlertDto | list[AlertDto]
+) -> int:
+    """
+    Calculate the unresolved counter of an alert based on the previous alert.
+
+    Args:
+        alert (AlertDto): The alert to calculate the unresolved counter for.
+        previous_alert (AlertDto): The previous alert.
+
+    Returns:
+        int: The calculated unresolved counter.
+    """
+    # if it's a resolved alert, the unresolved counter is 0
+    if alert.status == AlertStatus.RESOLVED.value:
+        return 0
+
+    # if this is the first alert, the unresolved counter is 1
+    if not previous_alert:
+        return 1
+    elif isinstance(previous_alert, list):
+        previous_alert = previous_alert[0]
+
+    if previous_alert.status == AlertStatus.RESOLVED.value:
+        return 1
+
+    # else, increment counter if the previous alert was firing
+    # NOTE: unresolved_counter -> 0 only if resolved
+    return previous_alert.unresolved_counter + 1
+
+
+def convert_db_alerts_to_dto_alerts(
+    alerts: list[Alert | tuple[Alert, LastAlertToIncident]],
+    with_incidents: bool = False,
+    with_alert_instance_enrichment: bool = False,
+    session: Optional[Session] = None,
+) -> list[AlertDto | AlertWithIncidentLinkMetadataDto]:
+    """
+    Enriches the alerts with the enrichment data.
+
+    Args:
+        alerts (list[Alert]): The alerts to enrich.
+        with_incidents (bool): enrich with incidents data
+
+    Returns:
+        list[AlertDto | AlertWithIncidentLinkMetadataDto]: The enriched alerts.
+    """
+    with existed_or_new_session(session) as session:
+        alerts_dto = []
+        with tracer.start_as_current_span("alerts_enrichment"):
+            # enrich the alerts with the enrichment data
+            for _object in alerts:
+                # We may have an Alert only or and Alert with an LastAlertToIncident
+                if isinstance(_object, Alert):
+                    alert, alert_to_incident = _object, None
+                else:
+                    alert, alert_to_incident = _object
+
+                enrichments = {}
+                if with_alert_instance_enrichment and alert.alert_instance_enrichment:
+                    enrichments = alert.alert_instance_enrichment.enrichments
+                elif alert.alert_enrichment and not with_alert_instance_enrichment:
+                    enrichments = alert.alert_enrichment.enrichments
+
+                alert_payload = alert.dict()
+                # Ensure ID is a string for AlertDto
+                alert_payload["id"] = str(alert.id) if alert.id else None
+                # source is a list in AlertDto but a string in Alert (SQLModel)
+                if alert_payload.get("source") and isinstance(alert_payload["source"], str):
+                    alert_payload["source"] = [alert_payload["source"]]
+
+                alert_payload.update(enrichments)
+
+                if with_incidents:
+                    if alert._incidents:
+                        alert_payload["incident"] = ",".join(
+                            str(incident.id) for incident in alert._incidents
+                        )
+                        alert_payload["incident_dto"] = [
+                            IncidentDto.from_db_incident(incident)
+                            for incident in alert._incidents
+                        ]
+                try:
+                    if alert_to_incident is not None:
+                        alert_dto = AlertWithIncidentLinkMetadataDto.from_db_instance(
+                            alert, alert_to_incident, payload=alert_payload
+                        )
+                    else:
+                        alert_dto = AlertDto(**alert_payload)
+
+                    if enrichments:
+                        parse_and_enrich_deleted_and_assignees(alert_dto, enrichments)
+
+                except Exception:
+                    # should never happen but just in case
+                    logger.exception(
+                        "Failed to parse alert",
+                        extra={
+                            "alert": alert,
+                        },
+                    )
+                    continue
+
+                alert_dto.id = str(alert.id)
+
+                # if the alert is acknowledged, the firing counter is 0
+                if alert_dto.status == AlertStatus.ACKNOWLEDGED.value:
+                    alert_dto.firing_counter = 0
+
+                # if the alert is resolved, the unresolved counter is 0
+                if alert_dto.status == AlertStatus.RESOLVED.value:
+                    alert_dto.unresolved_counter = 0
+
+                # always update provider id and type to the new values
+                alert_dto.provider_id = alert.provider_id
+                alert_dto.provider_type = alert.provider_type
+                alerts_dto.append(alert_dto)
+    return alerts_dto
