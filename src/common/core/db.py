@@ -1289,6 +1289,9 @@ LASTALERT_ENRICH_COLUMNS = {
     "assignee",
     "note",
     "deleted",
+    "ticket_type",
+    "ticket_url",
+    "ticket_provider_id",
 }
 
 

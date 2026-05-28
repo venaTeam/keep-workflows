@@ -130,7 +130,9 @@ def test_unknown_key_rejected(db_session):
             db_session,
             SINGLE_TENANT_UUID,
             "fp-unknown",
-            {"ticket_url": "https://example"},
+            # `unknown_field` is intentionally NOT in LASTALERT_ENRICH_COLUMNS.
+            # (ticket_url is now allow-listed as a typed column.)
+            {"unknown_field": "x"},
             action_type=ActionType.GENERIC_ENRICH,
             action_callee="alice",
             action_description="bad key",
