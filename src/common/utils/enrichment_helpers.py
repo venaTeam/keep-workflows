@@ -60,28 +60,10 @@ def javascript_iso_format(last_received) -> str:
     return dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-def parse_and_enrich_deleted_and_assignees(alert: AlertDto, enrichments: dict):
-    # tb: we'll need to refactor this at some point since its flaky
-    # assignees and deleted are special cases that we need to handle
-    # they are kept as a list of timestamps and we need to check if the
-    # timestamp of the alert is in the list, if it is, it means that the
-    # alert at that specific time was deleted or assigned.
-    #
-    # THIS IS MAINLY BECAUSE WE ALSO HAVE THE PULLED ALERTS,
-    # OTHERWISE, WE COULD'VE JUST UPDATE THE ALERT IN THE DB
-    deleted_last_received = enrichments.get(
-        "deletedAt", enrichments.get("deleted", [])
-    )  # "deleted" is for backward compatibility
-    if javascript_iso_format(alert.last_received) in deleted_last_received:
-        alert.deleted = True
-    assignees: dict = enrichments.get("assignees", {})
-    assignee = assignees.get(alert.last_received) or assignees.get(
-        javascript_iso_format(alert.last_received)
-    )
-    if assignee:
-        alert.assignee = assignee
-
-
+# Phase 2: parse_and_enrich_deleted_and_assignees removed. `deleted` and
+# `assignee` are now typed LastAlert columns (direct bool / str) instead of
+# timestamp-keyed list/dict enrichments, so callers setattr() them straight
+# from the LastAlert-sourced enrichments dict.
 
 
 def calculated_start_firing_time(

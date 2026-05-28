@@ -1,3 +1,4 @@
+import datetime
 import logging
 import os
 
@@ -9,7 +10,6 @@ from src.common.core.dependencies import SINGLE_TENANT_UUID
 from src.common.core.tenant_configuration import TenantConfiguration
 from src.common.models.alert import AlertDto, AlertSeverity
 from src.common.utils.cel_utils import preprocess_cel_expression
-from src.common.utils.enrichment_helpers import parse_and_enrich_deleted_and_assignees
 
 
 class ElasticClient:
@@ -114,10 +114,19 @@ class ElasticClient:
         for result in results["hits"]["hits"]:
             alert = result["_source"]
             alert_dto = AlertDto(**alert)
+            # Phase 2: enrichments is the typed user-state dict sourced from
+            # LastAlert columns. Setting attrs directly works for all keys;
+            # dismissed_until arrives as a datetime and must be ISO-coerced
+            # since AlertDto.dismissed_until is `str | None`.
             if alert_dto.fingerprint in enrichments_by_fingerprint:
-                parse_and_enrich_deleted_and_assignees(
-                    alert_dto, enrichments_by_fingerprint[alert_dto.fingerprint]
-                )
+                for key, value in enrichments_by_fingerprint[
+                    alert_dto.fingerprint
+                ].items():
+                    if key == "dismissed_until" and isinstance(
+                        value, datetime.datetime
+                    ):
+                        value = value.isoformat()
+                    setattr(alert_dto, key, value)
             alert_dtos.append(alert_dto)
         return alert_dtos
 
