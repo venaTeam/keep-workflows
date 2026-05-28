@@ -251,6 +251,19 @@ def convert_db_alerts_to_dto_alerts(
                     for _col in _LASTALERT_USER_COLUMNS:
                         _val = getattr(last_alert, _col, None)
                         if _val is not None:
+                            # dismissed_until is a TIMESTAMPTZ column; coerce to
+                            # the legacy canonical ISO string so AlertDto / JSON
+                            # serialization stay well-typed instead of carrying a
+                            # raw datetime (mirrors keep-api-gateway).
+                            if _col == "dismissed_until" and isinstance(
+                                _val, datetime
+                            ):
+                                _val = (
+                                    _val.astimezone(timezone.utc).strftime(
+                                        "%Y-%m-%dT%H:%M:%S.%f"
+                                    )[:-3]
+                                    + "Z"
+                                )
                             enrichments[_col] = _val
                     # Derived backward-compat flag.
                     enrichments["dismissed"] = last_alert.status == "suppressed"

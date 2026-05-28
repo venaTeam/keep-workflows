@@ -627,14 +627,23 @@ class BaseProvider(metaclass=abc.ABCMeta):
                         # `parse_and_enrich_deleted_and_assignees` would
                         # TypeError here. `dismissed_until` arrives as a
                         # datetime from the typed column but AlertDto expects a
-                        # str | None — coerce to ISO so downstream serialization
-                        # stays well-typed (mirrors api-gateway base_provider).
+                        # str | None, so it is coerced just below.
+                        # NOTE: coerce dismissed_until to the canonical UTC
+                        # "...Z" string (matches keep-api-gateway /
+                        # _build_enrichments), NOT isoformat() which emits
+                        # "+00:00". (Largely a dead path; `enrichments` is
+                        # already coerced upstream.)
                         for key, value in alert_enrichment.enrichments.items():
                             if (
                                 key == "dismissed_until"
                                 and isinstance(value, datetime.datetime)
                             ):
-                                value = value.isoformat()
+                                value = (
+                                    value.astimezone(
+                                        datetime.timezone.utc
+                                    ).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
+                                    + "Z"
+                                )
                             setattr(alert_to_enrich, key, value)
 
         return grouped_alerts

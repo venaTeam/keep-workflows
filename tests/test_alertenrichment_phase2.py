@@ -421,54 +421,113 @@ def test_strict_false_discards_unknown_keys(db_session):
 
 
 def test_convert_db_alerts_to_dto_filters_by_tenant(db_session):
-    """convert_db_alerts_to_dto_alerts must scope LastAlert lookup by tenant.
+    """convert_db_alerts_to_dto_alerts must scope the LastAlert lookup by tenant.
 
-    Two tenants sharing a fingerprint must not leak each other's enrichments.
+    Guards BOTH failure modes of dropping the `tenant_id.in_(...)` filter:
+      1. same-fingerprint cross-tenant collision (tenant B owns "shared-fp"
+         too), and
+      2. a DIFFERENT-fingerprint tenant-B row that a fingerprint-only `IN (...)`
+         query would over-fetch.
+    If the tenant scoping is removed, the query becomes fp-only and tenant B's
+    rows are pulled into the batch — this test asserts they never reach the DTO.
     """
     from src.common.utils.enrichment_helpers import convert_db_alerts_to_dto_alerts
+    from src.common.models.db.tenant import Tenant
 
     OTHER_TENANT = "other-tenant-id"
-    # tenant A: assignee=alice
+    # tenant A: assignee=alice on the shared fingerprint.
     alert_a, la_a = _make_alert(db_session, "shared-fp")
     la_a.assignee = "alice"
     db_session.add(la_a)
-
-    # tenant B: assignee=bob, same fingerprint
-    ts = datetime.now(tz=timezone.utc) + timedelta(seconds=1)
-    # Need a Tenant row for the FK; reuse SINGLE_TENANT_UUID is the only one in
-    # the fixture, so simulate the cross-tenant leak by directly inserting a
-    # LastAlert row under a different tenant_id via raw insert (skip FK):
-    # We use SQLAlchemy ORM `add` - the test DB is sqlite with no FK enforcement
-    # by default; if it fails, fall back to verifying the query itself.
-    from src.common.models.db.tenant import Tenant
-
-    db_session.add(Tenant(id=OTHER_TENANT, name="other"))
-    db_session.flush()
-    alert_b = Alert(
-        tenant_id=OTHER_TENANT,
-        provider_type="mock",
-        provider_id="mock",
-        fingerprint="shared-fp",
-        timestamp=ts,
-        status=AlertStatus.FIRING.value,
-        name="t",
-        alert_hash="h-other",
-    )
-    db_session.add(alert_b)
-    db_session.flush()
-    la_b = LastAlert(
-        tenant_id=OTHER_TENANT,
-        fingerprint="shared-fp",
-        alert_id=alert_b.id,
-        timestamp=ts,
-        first_timestamp=ts,
-        alert_hash="h-other",
-        assignee="bob",
-    )
-    db_session.add(la_b)
     db_session.commit()
 
-    # Convert only tenant A's alert -> must not pick up tenant B's "bob".
+    # The test DB is sqlite with no FK enforcement; add the other tenant row so
+    # the cross-tenant LastAlert rows can be inserted via the ORM.
+    db_session.add(Tenant(id=OTHER_TENANT, name="other"))
+    db_session.flush()
+
+    def _add_other_tenant_lastalert(fp, assignee, hash_suffix):
+        ts = datetime.now(tz=timezone.utc) + timedelta(seconds=1)
+        alert_b = Alert(
+            tenant_id=OTHER_TENANT,
+            provider_type="mock",
+            provider_id="mock",
+            fingerprint=fp,
+            timestamp=ts,
+            status=AlertStatus.FIRING.value,
+            name="t",
+            alert_hash=hash_suffix,
+        )
+        db_session.add(alert_b)
+        db_session.flush()
+        db_session.add(
+            LastAlert(
+                tenant_id=OTHER_TENANT,
+                fingerprint=fp,
+                alert_id=alert_b.id,
+                timestamp=ts,
+                first_timestamp=ts,
+                alert_hash=hash_suffix,
+                assignee=assignee,
+            )
+        )
+
+    # (1) tenant B, SAME fingerprint, different assignee.
+    _add_other_tenant_lastalert("shared-fp", "bob", "h-other")
+    # (2) tenant B, DIFFERENT fingerprint. A fp-only query would NOT fetch this
+    #     (fp not in the batch's fps), but if scoping switched to tenant-only or
+    #     dropped entirely this row could leak; assert it never surfaces.
+    _add_other_tenant_lastalert("other-fp", "carol", "h-other2")
+    db_session.commit()
+
+    # Convert only tenant A's alert -> must pick up ONLY tenant A's "alice".
     dtos = convert_db_alerts_to_dto_alerts([alert_a], session=db_session)
     assert len(dtos) == 1
     assert dtos[0].assignee == "alice"
+    assert dtos[0].assignee != "bob"
+    assert dtos[0].assignee != "carol"
+
+
+def test_dismissed_until_read_path_coerced_to_iso_string(db_session):
+    """Read paths must emit `dismissed_until` as a canonical ISO string.
+
+    The column is TIMESTAMPTZ; if a raw datetime leaks through, JSON
+    serialization (SSE notify requests.post(json=...)) raises TypeError and
+    Elastic gets a non-canonical timestamp. Both `_build_enrichments`
+    (get_enrichments / get_enrichment_with_session) and the
+    convert_db_alerts_to_dto_alerts copy path must coerce to
+    "YYYY-MM-DDThh:mm:ss.mmmZ".
+    """
+    import re
+
+    from src.common.utils.enrichment_helpers import convert_db_alerts_to_dto_alerts
+
+    ISO_RE = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$"
+
+    alert, la = _make_alert(db_session, "fp-dismissed-until")
+    la.status = "suppressed"
+    la.dismiss_mode = "dismiss_until"
+    la.dismissed_until = datetime.now(tz=timezone.utc) + timedelta(hours=1)
+    db_session.add(la)
+    db_session.commit()
+
+    # (a) _build_enrichments via session-scoped read.
+    view = get_enrichment_with_session(
+        db_session, SINGLE_TENANT_UUID, "fp-dismissed-until"
+    )
+    du = view.enrichments["dismissed_until"]
+    assert isinstance(du, str), f"expected str, got {type(du)}"
+    assert re.match(ISO_RE, du), du
+
+    # (a') _build_enrichments via engine-scoped read.
+    views = get_enrichments(SINGLE_TENANT_UUID, ["fp-dismissed-until"])
+    du2 = views[0].enrichments["dismissed_until"]
+    assert isinstance(du2, str), f"expected str, got {type(du2)}"
+    assert re.match(ISO_RE, du2), du2
+
+    # (b) convert_db_alerts_to_dto_alerts copy path.
+    dtos = convert_db_alerts_to_dto_alerts([alert], session=db_session)
+    assert len(dtos) == 1
+    du3 = dtos[0].dismissed_until
+    assert isinstance(du3, str), f"expected str, got {type(du3)}"
+    assert re.match(ISO_RE, du3), du3

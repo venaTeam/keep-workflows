@@ -42,7 +42,7 @@ from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.dialects.postgresql import JSONB as PG_JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.exc import IntegrityError, InternalError, OperationalError
 from sqlalchemy.orm import foreign, joinedload, subqueryload
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.orm.exc import StaleDataError
@@ -1294,6 +1294,18 @@ LASTALERT_ENRICH_COLUMNS = {
     "ticket_provider_id",
 }
 
+# System tracking columns owned by set_last_alert (relocated from alert).
+# Used as a strict allow-list for the set_last_alert(tracking=...) param to
+# prevent accidental clobber of user-enrichment columns via the tracking path.
+LASTALERT_TRACKING_COLUMNS = {
+    "last_received",
+    "firing_counter",
+    "unresolved_counter",
+    "started_at",
+    "firing_start_time",
+    "firing_start_time_since_last_resolved",
+}
+
 
 class _LastAlertEnrichmentView:
     """
@@ -1320,6 +1332,17 @@ class _LastAlertEnrichmentView:
                 continue
             value = getattr(last_alert, key, None)
             if value is not None:
+                # dismissed_until is a TIMESTAMPTZ column; coerce to the legacy
+                # canonical ISO string so JSON serialization (SSE notify
+                # requests.post(json=...)) and Elastic see a well-typed value
+                # rather than a raw datetime (mirrors keep-api-gateway).
+                if key == "dismissed_until" and isinstance(value, datetime):
+                    value = (
+                        value.astimezone(timezone.utc).strftime(
+                            "%Y-%m-%dT%H:%M:%S.%f"
+                        )[:-3]
+                        + "Z"
+                    )
                 data[key] = value
         # Derived backward-compat field for readers expecting `dismissed`.
         data["dismissed"] = last_alert.status == "suppressed"
@@ -1334,14 +1357,21 @@ def _translate_dismissed(enrichments: dict) -> dict:
     result = dict(enrichments)
     if "dismissed" in result:
         dismissed = result.pop("dismissed")
-        dismiss_until = result.pop("dismiss_until", None)
+        # A dismiss timestamp may accompany dismissed:true. Prefer a
+        # caller-supplied `dismissed_until` (typed key) and fall back to the
+        # legacy `dismiss_until` — mirrors keep-api-gateway `normalize_enrichments`
+        # so `{dismissed: true, dismissed_until: <ts>}` yields dismiss_until mode
+        # (not the inconsistent permanent + lingering dismissed_until).
+        ts = result.get("dismissed_until")
+        if ts is None:
+            ts = result.pop("dismiss_until", None)
         if dismissed:
             # An explicit caller status wins over the implied 'suppressed'
             # (mirrors the setdefault semantics used on the undismiss branch).
             result.setdefault("status", "suppressed")
-            if dismiss_until:
+            if ts:
                 result["dismiss_mode"] = "dismiss_until"
-                result["dismissed_until"] = dismiss_until
+                result["dismissed_until"] = ts
             else:
                 result.setdefault("dismiss_mode", "permanent")
         else:
@@ -5963,11 +5993,24 @@ def set_last_alert(
                     last_alert.alert_id = alert.id
                     last_alert.alert_hash = alert.alert_hash
 
-                    # Phase 2: write relocated system tracking columns.
-                    if tracking:
-                        for _key, _val in tracking.items():
-                            if _val is not None:
-                                setattr(last_alert, _key, _val)
+                    # Phase 2: write relocated system tracking columns when
+                    # provided. Strict allow-list — never let `tracking` clobber
+                    # user-enrichment columns (status/assignee/note/dismiss_*)
+                    # which the enrich path owns. None IS written (-> NULL) so a
+                    # RESOLVED transition clears firing_start_time as intended.
+                    if tracking is not None:
+                        for _col, _val in tracking.items():
+                            if _col not in LASTALERT_TRACKING_COLUMNS:
+                                logger.warning(
+                                    "phase2.set_last_alert.ignored_tracking_key",
+                                    extra={
+                                        "tenant_id": tenant_id,
+                                        "fingerprint": fingerprint,
+                                        "key": _col,
+                                    },
+                                )
+                                continue
+                            setattr(last_alert, _col, _val)
 
                     # Phase 2: status / dismiss clearing on re-fire vs resolve.
                     resolved = alert.status == AlertStatus.RESOLVED.value
@@ -5996,11 +6039,21 @@ def set_last_alert(
                         alert_id=alert.id,
                         alert_hash=alert.alert_hash,
                     )
-                    # Phase 2: write relocated system tracking columns.
-                    if tracking:
-                        for _key, _val in tracking.items():
-                            if _val is not None:
-                                setattr(new_last_alert, _key, _val)
+                    # Phase 2: write relocated system tracking columns when
+                    # provided. Strict allow-list — see comment above.
+                    if tracking is not None:
+                        for _col, _val in tracking.items():
+                            if _col not in LASTALERT_TRACKING_COLUMNS:
+                                logger.warning(
+                                    "phase2.set_last_alert.ignored_tracking_key",
+                                    extra={
+                                        "tenant_id": tenant_id,
+                                        "fingerprint": fingerprint,
+                                        "key": _col,
+                                    },
+                                )
+                                continue
+                            setattr(new_last_alert, _col, _val)
                     session.add(new_last_alert)
 
                 session.commit()
@@ -6051,6 +6104,25 @@ def set_last_alert(
                 session.rollback()
                 logger.exception(
                     f"No active sql transaction while updating lastalert for `{fingerprint}`, retry #{attempt}",
+                    extra={
+                        "alert_id": alert.id,
+                        "tenant_id": tenant_id,
+                        "fingerprint": fingerprint,
+                    },
+                )
+                if attempt == max_retries:
+                    raise ex
+                # Small delay before retry to avoid hammering the database
+                time.sleep(0.1 * attempt)
+                continue
+            except InternalError as ex:
+                # Under the ORM a transient DB internal/serialization error (and
+                # the no-active-transaction case) surfaces as
+                # sqlalchemy.exc.InternalError — retry instead of propagating
+                # uncaught (mirrors keep-event-handler).
+                session.rollback()
+                logger.exception(
+                    f"Internal error while updating lastalert for `{fingerprint}`, retry #{attempt}",
                     extra={
                         "alert_id": alert.id,
                         "tenant_id": tenant_id,

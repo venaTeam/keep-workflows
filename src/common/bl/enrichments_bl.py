@@ -17,6 +17,7 @@ from sqlmodel import Session, select
 
 from src.common.core.config import config
 from src.common.core.db import (
+    _normalize_alert_enrichments,
     batch_enrich,
     get_alert_by_event_id,
     get_extraction_rule_by_id,
@@ -741,6 +742,16 @@ class EnrichmentsBl:
         ):
             enrichments = {**enrichments, "status_disposable": True}
 
+        # Phase 2: normalize ONCE here (alert path only) so BOTH the DB write
+        # and the Elastic enrich_alert call below see the typed-column dict —
+        # otherwise Elastic receives raw legacy keys (dismissed/dismiss_until)
+        # and unknown keys. enrich_alert_db re-normalizes internally, but that
+        # is idempotent on an already-normalized dict. Incidents keep arbitrary
+        # JSONB keys, so they are NOT normalized. ValueError (strict unknown
+        # key) propagates intentionally.
+        if entity_type != "incident":
+            enrichments = _normalize_alert_enrichments(enrichments, strict=strict)
+
         enrich_alert_db(
             self.tenant_id,
             fingerprint,
@@ -763,7 +774,8 @@ class EnrichmentsBl:
         #   in elastic the alertdto is being kept which is alert + enrichments
         # so for example, in mapping, the enrichment happens before the alert is indexed in elastic
         #
-        if should_exist:
+        # Incidents are not indexed as alerts in elastic, so skip elastic for them.
+        if should_exist and entity_type == "alert":
             try:
                 self.elastic_client.enrich_alert(
                     alert_fingerprint=fingerprint,
