@@ -1280,18 +1280,13 @@ def add_audit(
 
 
 # === Phase 2: typed enrichment columns on LastAlert ===
-# Keys that map 1:1 to LastAlert columns and may be written via the enrich path.
-LASTALERT_ENRICH_COLUMNS = {
-    "status",
-    "status_disposable",
-    "dismiss_mode",
-    "dismissed_until",
-    "assignee",
-    "note",
-    "deleted",
-    "ticket_type",
-    "ticket_url",
-    "ticket_provider_id",
+# Phase 2: derived from the LastAlert model (single source of truth) — columns tagged
+# info={"enrichable": True} are the user-writable enrichment columns. Keeping this in sync
+# with the model is automatic; do not hand-maintain a literal list.
+LASTALERT_ENRICHMENT_COLUMNS = {
+    column.name
+    for column in LastAlert.__table__.columns
+    if column.info.get("enrichable")
 }
 
 # System tracking columns owned by set_last_alert (relocated from alert).
@@ -1325,7 +1320,7 @@ class _LastAlertEnrichmentView:
         if last_alert is None:
             return {}
         data: dict = {}
-        for key in LASTALERT_ENRICH_COLUMNS:
+        for key in LASTALERT_ENRICHMENT_COLUMNS:
             # status_disposable is internal clearing state, not user-facing —
             # never surfaced on the read view / DTO.
             if key == "status_disposable":
@@ -1595,7 +1590,7 @@ def _normalize_alert_enrichments(enrichments: dict, strict: bool) -> dict:
           discard with a warning. Mirrors keep-api-gateway `normalize_enrichments`.
     """
     translated = _translate_dismissed(enrichments)
-    unknown = set(translated.keys()) - LASTALERT_ENRICH_COLUMNS
+    unknown = set(translated.keys()) - LASTALERT_ENRICHMENT_COLUMNS
     if unknown:
         if strict:
             raise ValueError(
@@ -2004,7 +1999,7 @@ def get_alerts_with_filters(
         if filters:
             for f in filters:
                 filter_key, filter_value = f.get("key"), f.get("value")
-                if filter_key not in LASTALERT_ENRICH_COLUMNS:
+                if filter_key not in LASTALERT_ENRICHMENT_COLUMNS:
                     logger.warning(
                         "Unsupported filter key in strict schema",
                         extra={"filter": f},

@@ -20,6 +20,7 @@ import pytest
 
 from src.common.core import db as db_module
 from src.common.core.db import (
+    LASTALERT_ENRICHMENT_COLUMNS,
     _enrich_entity,
     enrich_entity,
     get_enrichment_with_session,
@@ -59,6 +60,13 @@ def _make_alert(db_session, fingerprint, status=AlertStatus.FIRING.value, ts=Non
     db_session.add(last_alert)
     db_session.commit()
     return alert, last_alert
+
+
+def test_enrichment_columns_match_model():
+    assert LASTALERT_ENRICHMENT_COLUMNS == {
+        "status", "status_disposable", "dismiss_mode", "dismissed_until", "assignee",
+        "note", "deleted", "ticket_type", "ticket_url", "ticket_provider_id",
+    }
 
 
 def test_enrich_writes_typed_columns(db_session):
@@ -130,7 +138,7 @@ def test_unknown_key_rejected(db_session):
             db_session,
             SINGLE_TENANT_UUID,
             "fp-unknown",
-            # `unknown_field` is intentionally NOT in LASTALERT_ENRICH_COLUMNS.
+            # `unknown_field` is intentionally NOT in LASTALERT_ENRICHMENT_COLUMNS.
             # (ticket_url is now allow-listed as a typed column.)
             {"unknown_field": "x"},
             action_type=ActionType.GENERIC_ENRICH,
