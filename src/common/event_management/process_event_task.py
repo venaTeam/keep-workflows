@@ -525,6 +525,12 @@ def __save_to_db(
                 alert_args["last_received"] = dateutil.parser.isoparse(
                     alert_args["last_received"]
                 )
+            # Per-occurrence received time on the alert row (distinct from the
+            # relocated lastalert.last_received used by the DTO/queries).
+            _received_at = formatted_event.last_received
+            if isinstance(_received_at, str):
+                _received_at = dateutil.parser.isoparse(_received_at)
+            alert_args["received_at"] = _received_at
             if timestamp_forced is not None:
                 alert_args["timestamp"] = timestamp_forced
 
