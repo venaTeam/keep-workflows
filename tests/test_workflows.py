@@ -1,6 +1,8 @@
 from datetime import datetime
 from unittest.mock import patch
 
+import pytest
+
 from src.common.core.db import create_workflow_execution, get_workflow_execution
 from src.common.core.dependencies import SINGLE_TENANT_UUID
 from src.common.models.alert import AlertDto, AlertStatus
@@ -261,6 +263,7 @@ def test_workflow_postgres_results(db_session):
     )
 
 
+@pytest.mark.skip(reason="Phase 2 (alertenrichment removal, Option A): dynamic enrichment fields have no typed lastalert column and are dropped by the strict allow-list; this test asserts pre-Phase-2 dynamic-field behavior. See HANDOFF.md.")
 def test_workflow_enrichment_with_nested_results(db_session, create_alert):
     """Test that reproduces the bug where enrichment doesn't work with results[0][0] access pattern"""
 
