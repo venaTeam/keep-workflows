@@ -288,7 +288,7 @@ def __save_to_db(
                 session.add(audit)
 
                 __validate_last_received(event)
-                # Phase 2: dedup does not create a new Alert row, so update the
+                # Dedup does not create a new Alert row, so update the
                 # LastAlert tracking column directly and apply the same
                 # status/dismiss clearing rules as set_last_alert.
                 try:
@@ -423,7 +423,7 @@ def __save_to_db(
                     formatted_event, previous_alert
                 )
 
-            # Phase 2: resolve-clearing and status-disposable clearing now live in
+            # Resolve-clearing and status-disposable clearing now live in
             # set_last_alert (applied below when the new Alert is recorded). The
             # legacy `assignees` timestamp-dict propagation is dropped — assignee
             # is a typed LastAlert column that is never auto-cleared.
@@ -684,7 +684,7 @@ def __save_to_db(
                         else None,
                     },
                 )
-                # Phase 2: relocated system tracking fields are written to the
+                # The relocated system tracking fields are written to the
                 # LastAlert row via the `tracking` kwarg.
                 _last_received = getattr(formatted_event, "last_received", None)
                 if isinstance(_last_received, str):

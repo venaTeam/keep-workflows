@@ -323,7 +323,7 @@ class BaseProvider(metaclass=abc.ABCMeta):
                 "action_callee": "system",
                 "audit_enabled": audit_enabled,
                 # Route incident enrichment to the legacy AlertEnrichment JSONB
-                # path; alerts use the typed LastAlert columns (Phase 2).
+                # path; alerts use the typed LastAlert columns.
                 "entity_type": entity_type,
                 # Workflow YAML actions emit arbitrary user-defined keys; the
                 # strict typed schema can only persist the known LastAlert
@@ -342,7 +342,7 @@ class BaseProvider(metaclass=abc.ABCMeta):
 
             # todo: incidents do not have disposable enrichments
             if disposable_enrichments and entity_type == "alert":
-                # Phase 2: disposable enrichments route through the typed enrich
+                # disposable enrichments route through the typed enrich
                 # path with dispose_on_new_alert=True, which sets the
                 # status_disposable column so set_last_alert clears the status on
                 # the next non-resolved re-fire.
@@ -618,7 +618,7 @@ class BaseProvider(metaclass=abc.ABCMeta):
                         alert_enrichment.alert_fingerprint
                     )
                     for alert_to_enrich in alerts_to_enrich:
-                        # Phase 2: alert_enrichment.enrichments is the typed
+                        # alert_enrichment.enrichments is the typed
                         # user-state dict built from LastAlert columns
                         # (status/assignee/note/dismiss_mode/dismissed_until/
                         # deleted + derived `dismissed`). `deleted` and

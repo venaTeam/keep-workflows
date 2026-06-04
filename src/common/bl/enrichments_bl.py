@@ -257,7 +257,7 @@ class EnrichmentsBl:
                     action_callee="system",
                     action_description=f"Alert enriched with extraction from rule `{rule.name}`",
                     should_exist=False,
-                    # Phase 2: extraction rules emit arbitrary regex-group keys
+                    # Extraction rules emit arbitrary regex-group keys
                     # that have no destination in the strict typed schema. System
                     # write -> discard unknown keys with a warning instead of 422.
                     strict=False,
@@ -495,7 +495,7 @@ class EnrichmentsBl:
                 action_callee="system",
                 action_description=f"Alert enriched with mapping from rule `{rule.name}`",
                 should_exist=False,
-                # Phase 2: mapping rules emit arbitrary user-defined keys that
+                # Mapping rules emit arbitrary user-defined keys that
                 # have no destination in the strict typed schema. System write
                 # -> discard unknown keys with a warning instead of 422.
                 strict=False,
@@ -672,7 +672,7 @@ class EnrichmentsBl:
             "enriching multiple fingerprints",
             extra={"fingerprints": fingerprints, "tenant_id": self.tenant_id},
         )
-        # Phase 2: "dispose on new alert" is modeled by the status_disposable
+        # "Dispose on new alert" is modeled by the status_disposable
         # typed column instead of disposable_* JSON keys. When a status is being
         # set with dispose_on_new_alert, flag it so set_last_alert clears it on
         # the next non-resolved re-fire. ALERT-only — incidents keep arbitrary
@@ -715,7 +715,8 @@ class EnrichmentsBl:
         action_type = AlertActionType - the action type of the enrichment
         action_callee = the action callee of the enrichment
         entity_type = "alert" (default, typed LastAlert columns) or "incident"
-            (legacy AlertEnrichment JSONB; kept until Phase 3)
+            (legacy AlertEnrichment JSONB; kept until a later migration removes
+            the `alertenrichment` table)
 
         Enrich the entity with extraction and mapping rules
         """
@@ -732,7 +733,7 @@ class EnrichmentsBl:
                 "entity_type": entity_type,
             },
         )
-        # Phase 2: "dispose on new alert" is modeled by the status_disposable
+        # "Dispose on new alert" is modeled by the status_disposable
         # typed column instead of disposable_* JSON keys. ALERT-only — incidents
         # keep arbitrary JSONB keys untouched.
         if (
@@ -742,7 +743,7 @@ class EnrichmentsBl:
         ):
             enrichments = {**enrichments, "status_disposable": True}
 
-        # Phase 2: normalize ONCE here (alert path only) so BOTH the DB write
+        # Normalize ONCE here (alert path only) so BOTH the DB write
         # and the Elastic enrich_alert call below see the typed-column dict —
         # otherwise Elastic receives raw legacy keys (dismissed/dismiss_until)
         # and unknown keys. enrich_alert_db re-normalizes internally, but that

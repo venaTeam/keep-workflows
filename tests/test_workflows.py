@@ -263,7 +263,7 @@ def test_workflow_postgres_results(db_session):
     )
 
 
-@pytest.mark.skip(reason="Phase 2 (alertenrichment removal, Option A): dynamic enrichment fields have no typed lastalert column and are dropped by the strict allow-list; this test asserts pre-Phase-2 dynamic-field behavior. See HANDOFF.md.")
+@pytest.mark.skip(reason="alertenrichment removal (Option A): dynamic enrichment fields have no typed lastalert column and are dropped by the strict allow-list; this test asserts the legacy dynamic-field behavior. See HANDOFF.md.")
 def test_workflow_enrichment_with_nested_results(db_session, create_alert):
     """Test that reproduces the bug where enrichment doesn't work with results[0][0] access pattern"""
 

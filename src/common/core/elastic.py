@@ -114,7 +114,7 @@ class ElasticClient:
         for result in results["hits"]["hits"]:
             alert = result["_source"]
             alert_dto = AlertDto(**alert)
-            # Phase 2: enrichments is the typed user-state dict sourced from
+            # enrichments is the typed user-state dict sourced from
             # LastAlert columns. Setting attrs directly works for all keys;
             # dismissed_until arrives as a datetime and must be ISO-coerced
             # since AlertDto.dismissed_until is `str | None`.

@@ -15,7 +15,7 @@ from src.common.models.alert import (
 )
 from src.common.models.db.alert import Alert, LastAlert, LastAlertToIncident
 
-# Phase 2: user enrichment state lives on these typed LastAlert columns.
+# user enrichment state lives on these typed LastAlert columns.
 _LASTALERT_USER_COLUMNS = (
     "status",
     "dismiss_mode",
@@ -24,7 +24,7 @@ _LASTALERT_USER_COLUMNS = (
     "note",
     "deleted",
 )
-# Phase 2: system tracking fields relocated from Alert to LastAlert.
+# system tracking fields relocated from Alert to LastAlert.
 _LASTALERT_TRACKING_COLUMNS = (
     "last_received",
     "firing_counter",
@@ -60,7 +60,7 @@ def javascript_iso_format(last_received) -> str:
     return dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-# Phase 2: parse_and_enrich_deleted_and_assignees removed. `deleted` and
+# parse_and_enrich_deleted_and_assignees removed. `deleted` and
 # `assignee` are now typed LastAlert columns (direct bool / str) instead of
 # timestamp-keyed list/dict enrichments, so callers setattr() them straight
 # from the LastAlert-sourced enrichments dict.
@@ -204,7 +204,7 @@ def convert_db_alerts_to_dto_alerts(
     Returns:
         list[AlertDto | AlertWithIncidentLinkMetadataDto]: The enriched alerts.
     """
-    # Phase 2: `with_alert_instance_enrichment` no longer has a destination —
+    # `with_alert_instance_enrichment` no longer has a destination —
     # per-occurrence enrichment snapshots are dropped; occurrences carry only
     # provider data. The parameter is retained for signature compatibility.
     with existed_or_new_session(session) as session:
@@ -302,7 +302,7 @@ def convert_db_alerts_to_dto_alerts(
                     else:
                         alert_dto = AlertDto(**alert_payload)
 
-                    # Phase 2: `deleted` and `assignee` are read directly from the
+                    # `deleted` and `assignee` are read directly from the
                     # typed LastAlert columns (already merged into alert_payload);
                     # the legacy timestamp-list parsing is no longer needed.
 

@@ -111,7 +111,7 @@ class KeepProvider(BaseProvider):
             # distinct if needed
             alerts = []
             if db_alerts:
-                # Phase 2: enrichment state is built from typed LastAlert columns.
+                # Enrichment state is built from typed LastAlert columns.
                 enrichment_views = {
                     view.alert_fingerprint: view
                     for view in get_enrichments(

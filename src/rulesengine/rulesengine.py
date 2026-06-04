@@ -127,7 +127,7 @@ class RulesEngine:
                                 event.fingerprint,
                                 status=AlertStatus.RESOLVED.value,
                             )
-                            # Phase 2: Alert.last_received was relocated to
+                            # Alert.last_received was relocated to
                             # LastAlert; compare against the per-occurrence
                             # Alert.timestamp instead.
                             try:

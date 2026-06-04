@@ -82,7 +82,7 @@ def create_alert(db_session):
         }
         alert_data.update(extra_event_data)
 
-        # Phase 2: tracking + user enrichment state live on LastAlert; only
+        # Tracking + user enrichment state live on LastAlert; only
         # immutable provider columns live on Alert. Keys not matching either are
         # dropped (no JSONB overflow in the strict schema).
         alert_columns = set(Alert.__fields__.keys())

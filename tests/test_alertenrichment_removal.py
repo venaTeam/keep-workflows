@@ -1,5 +1,5 @@
 """
-Phase 2 (alertenrichment removal) tests — keep-workflows.
+alertenrichment removal tests — keep-workflows.
 
 Covers the typed-LastAlert-column enrichment path that replaces the
 alertenrichment JSONB column:
@@ -372,7 +372,7 @@ def test_get_enrichments_builds_dict_from_columns(db_session):
 
 
 # ============================================================================
-# Phase 2 review-pass regressions (parity with keep-api-gateway fixes)
+# Review-pass regressions (parity with keep-api-gateway fixes)
 # ============================================================================
 
 

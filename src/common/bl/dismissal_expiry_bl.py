@@ -4,7 +4,7 @@ Business logic for handling dismissal expiry.
 This module provides functionality to automatically expire alert dismissals
 when their dismissed_until timestamp has passed.
 
-Phase 2: dismiss state lives on typed LastAlert columns (status, dismiss_mode,
+Dismiss state lives on typed LastAlert columns (status, dismiss_mode,
 dismissed_until) instead of the alertenrichment JSONB column.
 """
 

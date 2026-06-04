@@ -103,7 +103,7 @@ _INFRA_COLUMNS = {
 
 # Retained for backward-compat with src/common/core/incidents.py, which imports
 # these to build its own (incident-scoped) alert field configurations. The
-# incident query path is out of scope for Phase 2 and keeps its existing behavior
+# incident query path is out of scope for the alertenrichment removal and keeps its existing behavior
 # (still reads alertenrichment JSONB).
 _SPECIAL_FIELDS = {
     "severity": {
@@ -126,7 +126,7 @@ _SPECIAL_FIELDS = {
     "unresolved_counter": {"data_type": DataType.INTEGER},
 }
 
-# === Phase 2: strict schema (mirrors keep-api-gateway/src/repositories/alerts.py) ===
+# === strict schema (mirrors keep-api-gateway/src/repositories/alerts.py) ===
 # User-enrichment state + relocated tracking fields now live as typed columns on
 # LastAlert (no more alertenrichment JSONB extraction for ALERTS). These are
 # mapped explicitly here and EXCLUDED from the generic Alert-column loop below.
@@ -136,7 +136,7 @@ _SPECIAL_FIELDS = {
 #   - assignee/note/dismiss_mode/dismissed_until/deleted: typed lastalert columns.
 #   - dismissed: derived boolean (lastalert.status == 'suppressed').
 #   - tracking fields (last_received/firing_counter/...): relocated to lastalert.
-_PHASE2_FIELD_CONFIGS = [
+_STRICT_SCHEMA_FIELD_CONFIGS = [
     FieldMappingConfiguration(
         map_from_pattern="status",
         map_to=["lastalert.status", "alert.status"],
@@ -216,19 +216,19 @@ _PHASE2_FIELD_CONFIGS = [
         data_type=DataType.STRING,
     ),
 ]
-alert_field_configurations.extend(_PHASE2_FIELD_CONFIGS)
+alert_field_configurations.extend(_STRICT_SCHEMA_FIELD_CONFIGS)
 
-# Fields handled explicitly above (Phase 2) — skip them in the generic loop so we
+# Fields handled explicitly above — skip them in the generic loop so we
 # don't shadow the LastAlert-backed mappings with a plain alert.* mapping. Note
 # `started_at` stays mapped to lastalert.first_timestamp (declared at the top) and
 # must not be overridden by the relocated lastalert.started_at string column.
-_PHASE2_HANDLED_FIELDS = {cfg.map_from_pattern for cfg in _PHASE2_FIELD_CONFIGS}
-_PHASE2_HANDLED_FIELDS.add("started_at")
+_STRICT_SCHEMA_HANDLED_FIELDS = {cfg.map_from_pattern for cfg in _STRICT_SCHEMA_FIELD_CONFIGS}
+_STRICT_SCHEMA_HANDLED_FIELDS.add("started_at")
 
 for col in Alert.__table__.columns:
     if col.name in _INFRA_COLUMNS:
         continue
-    if col.name in _PHASE2_HANDLED_FIELDS:
+    if col.name in _STRICT_SCHEMA_HANDLED_FIELDS:
         continue
     alert_field_configurations.append(
         FieldMappingConfiguration(
@@ -240,7 +240,7 @@ for col in Alert.__table__.columns:
         )
     )
 
-# Phase 2: strict schema — the catch-all `*` → alertenrichment JSON mapping is
+# Strict schema — the catch-all `*` → alertenrichment JSON mapping is
 # removed. Alert user-state lives on typed LastAlert columns; arbitrary unknown
 # fields are no longer routed to the (no-longer-written) JSONB column.
 
@@ -346,7 +346,7 @@ def __build_query_for_filtering(
     sql_query = select(*select_args).select_from(LastAlert)
 
     if fetch_alerts_data or force_fetch:
-        # Phase 2: no more alertenrichment JOIN — user state lives on LastAlert
+        # No more alertenrichment JOIN — user state lives on LastAlert
         # typed columns (already the FROM table here).
         sql_query = sql_query.join(
             Alert,
@@ -509,7 +509,7 @@ def query_last_alerts(tenant_id, query: QueryDto) -> Tuple[list[Alert], int]:
             return [], 0
 
         # Process results based on dialect
-        # Phase 2: alert_data = (Alert, LastAlert, started_at). The CEL field
+        # alert_data = (Alert, LastAlert, started_at). The CEL field
         # config + query builders now map alert user-state (status/assignee/note/
         # dismiss_mode/dismissed_until/deleted) and the relocated tracking fields
         # to typed LastAlert columns — the alertenrichment JOIN and the catch-all
