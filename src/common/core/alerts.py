@@ -230,13 +230,25 @@ for col in Alert.__table__.columns:
         continue
     if col.name in _STRICT_SCHEMA_HANDLED_FIELDS:
         continue
+    # Use the column's real scalar type for int/float/bool so CEL truthiness and
+    # comparisons stay type-correct (e.g. integer `expiry_in_minutes` must not be
+    # compared to a boolean literal). Text/datetime/etc. keep mapping as STRING.
+    try:
+        _py_type = col.type.python_type
+    except Exception:
+        _py_type = str
+    _col_data_type = {
+        int: DataType.INTEGER,
+        float: DataType.FLOAT,
+        bool: DataType.BOOLEAN,
+    }.get(_py_type, DataType.STRING)
     alert_field_configurations.append(
         FieldMappingConfiguration(
             map_from_pattern=col.name,
             map_to=[
                 f"alert.{col.name}",
             ],
-            data_type=DataType.STRING,
+            data_type=_col_data_type,
         )
     )
 
