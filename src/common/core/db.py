@@ -4794,9 +4794,10 @@ def add_alerts_to_incident(
             else:
                 alerts_count = alerts_data_for_incident["count"]
 
-            # Alert.last_received moved to LastAlert; use the
-            # per-occurrence Alert.timestamp for incident start/last-seen bounds.
-            last_received_field = Alert.timestamp
+            # Alert.last_received moved to LastAlert; alert.received_at is its
+            # per-occurrence replacement. COALESCE with the row timestamp so pre-Phase-2
+            # rows (received_at NULL) still bound the incident start/last-seen.
+            last_received_field = func.coalesce(Alert.received_at, Alert.timestamp)
 
             started_at, last_seen_at = session.exec(
                 select(func.min(last_received_field), func.max(last_received_field))
@@ -5023,9 +5024,10 @@ def remove_alerts_to_incident_by_incident_id(
             if source not in sources_existed
         ]
 
-        # Alert.last_received moved to LastAlert; use the per-occurrence
-        # Alert.timestamp for incident start/last-seen bounds.
-        last_received_field = Alert.timestamp
+        # Alert.last_received moved to LastAlert; alert.received_at is its
+        # per-occurrence replacement. COALESCE with the row timestamp so pre-Phase-2
+        # rows (received_at NULL) still bound the incident start/last-seen.
+        last_received_field = func.coalesce(Alert.received_at, Alert.timestamp)
 
         started_at, last_seen_at = session.exec(
             select(func.min(last_received_field), func.max(last_received_field))
