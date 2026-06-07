@@ -24,7 +24,6 @@ from src.common.core.facets import get_facet_options, get_facets
 from src.common.models.alert import AlertSeverity, AlertStatus
 from src.common.models.db.alert import (
     Alert,
-    AlertEnrichment,
     AlertField,
     Incident,
     LastAlert,
@@ -102,6 +101,10 @@ _INFRA_COLUMNS = {
     "fingerprint", "alert_hash"
 }
 
+# Retained for backward-compat with src/common/core/incidents.py, which imports
+# these to build its own (incident-scoped) alert field configurations. The
+# incident query path is out of scope for the alertenrichment removal and keeps its existing behavior
+# (still reads alertenrichment JSONB).
 _SPECIAL_FIELDS = {
     "severity": {
         "data_type": DataType.STRING,
@@ -123,31 +126,135 @@ _SPECIAL_FIELDS = {
     "unresolved_counter": {"data_type": DataType.INTEGER},
 }
 
+# === strict schema (mirrors keep-api-gateway/src/repositories/alerts.py) ===
+# User-enrichment state + relocated tracking fields now live as typed columns on
+# LastAlert (no more alertenrichment JSONB extraction for ALERTS). These are
+# mapped explicitly here and EXCLUDED from the generic Alert-column loop below.
+#   - status: user override (lastalert.status) coalesced with the provider value
+#     (alert.status).
+#   - severity: immutable provider value on alert.
+#   - assignee/note/dismiss_mode/dismissed_until/deleted: typed lastalert columns.
+#   - dismissed: derived boolean (lastalert.status == 'suppressed').
+#   - tracking fields (last_received/firing_counter/...): relocated to lastalert.
+_STRICT_SCHEMA_FIELD_CONFIGS = [
+    FieldMappingConfiguration(
+        map_from_pattern="status",
+        map_to=["lastalert.status", "alert.status"],
+        data_type=DataType.STRING,
+        enum_values=list(
+            reversed([item.value for _, item in enumerate(AlertStatus)])
+        ),
+    ),
+    FieldMappingConfiguration(
+        map_from_pattern="severity",
+        map_to=["alert.severity"],
+        data_type=DataType.STRING,
+        enum_values=[
+            severity.value
+            for severity in sorted(
+                [severity for _, severity in enumerate(AlertSeverity)],
+                key=lambda s: s.order,
+            )
+        ],
+    ),
+    FieldMappingConfiguration(
+        map_from_pattern="assignee",
+        map_to=["lastalert.assignee"],
+        data_type=DataType.STRING,
+    ),
+    FieldMappingConfiguration(
+        map_from_pattern="note",
+        map_to=["lastalert.note"],
+        data_type=DataType.STRING,
+    ),
+    FieldMappingConfiguration(
+        map_from_pattern="dismiss_mode",
+        map_to=["lastalert.dismiss_mode"],
+        data_type=DataType.STRING,
+    ),
+    FieldMappingConfiguration(
+        map_from_pattern="dismissed_until",
+        map_to=["lastalert.dismissed_until"],
+        data_type=DataType.DATETIME,
+    ),
+    FieldMappingConfiguration(
+        map_from_pattern="deleted",
+        map_to=["lastalert.deleted"],
+        data_type=DataType.BOOLEAN,
+    ),
+    FieldMappingConfiguration(
+        map_from_pattern="dismissed",
+        map_to=[
+            "CASE WHEN lastalert.status = 'suppressed' THEN 'true' ELSE 'false' END"
+        ],
+        data_type=DataType.BOOLEAN,
+    ),
+    # relocated system-tracking fields
+    FieldMappingConfiguration(
+        map_from_pattern="last_received",
+        map_to=["lastalert.last_received"],
+        data_type=DataType.DATETIME,
+    ),
+    FieldMappingConfiguration(
+        map_from_pattern="firing_counter",
+        map_to=["lastalert.firing_counter"],
+        data_type=DataType.INTEGER,
+    ),
+    FieldMappingConfiguration(
+        map_from_pattern="unresolved_counter",
+        map_to=["lastalert.unresolved_counter"],
+        data_type=DataType.INTEGER,
+    ),
+    FieldMappingConfiguration(
+        map_from_pattern="firing_start_time",
+        map_to=["lastalert.firing_start_time"],
+        data_type=DataType.STRING,
+    ),
+    FieldMappingConfiguration(
+        map_from_pattern="firing_start_time_since_last_resolved",
+        map_to=["lastalert.firing_start_time_since_last_resolved"],
+        data_type=DataType.STRING,
+    ),
+]
+alert_field_configurations.extend(_STRICT_SCHEMA_FIELD_CONFIGS)
+
+# Fields handled explicitly above — skip them in the generic loop so we
+# don't shadow the LastAlert-backed mappings with a plain alert.* mapping. Note
+# `started_at` stays mapped to lastalert.first_timestamp (declared at the top) and
+# must not be overridden by the relocated lastalert.started_at string column.
+_STRICT_SCHEMA_HANDLED_FIELDS = {cfg.map_from_pattern for cfg in _STRICT_SCHEMA_FIELD_CONFIGS}
+_STRICT_SCHEMA_HANDLED_FIELDS.add("started_at")
+
 for col in Alert.__table__.columns:
     if col.name in _INFRA_COLUMNS:
         continue
-    special = _SPECIAL_FIELDS.get(col.name, {})
+    if col.name in _STRICT_SCHEMA_HANDLED_FIELDS:
+        continue
+    # Use the column's real scalar type for int/float/bool so CEL truthiness and
+    # comparisons stay type-correct (e.g. integer `expiry_in_minutes` must not be
+    # compared to a boolean literal). Text/datetime/etc. keep mapping as STRING.
+    try:
+        _py_type = col.type.python_type
+    except Exception:
+        _py_type = str
+    _col_data_type = {
+        int: DataType.INTEGER,
+        float: DataType.FLOAT,
+        bool: DataType.BOOLEAN,
+    }.get(_py_type, DataType.STRING)
     alert_field_configurations.append(
         FieldMappingConfiguration(
             map_from_pattern=col.name,
             map_to=[
-                "JSON(alertenrichment.enrichments).*",
                 f"alert.{col.name}",
             ],
-            data_type=special.get("data_type", DataType.STRING),
-            enum_values=special.get("enum_values"),
+            data_type=_col_data_type,
         )
     )
 
-alert_field_configurations.append(
-    FieldMappingConfiguration(
-        map_from_pattern="*",
-        map_to=[
-            "JSON(alertenrichment.enrichments).*",
-        ],
-        data_type=DataType.STRING,
-    )
-)
+# Strict schema — the catch-all `*` → alertenrichment JSON mapping is
+# removed. Alert user-state lives on typed LastAlert columns; arbitrary unknown
+# fields are no longer routed to the (no-longer-written) JSONB column.
 
 # Copies the same configuration as above, but adds the "alert." prefix to each entry in map_from_pattern.
 # This allows users to write queries using dictionary-style field access, like:
@@ -251,16 +358,12 @@ def __build_query_for_filtering(
     sql_query = select(*select_args).select_from(LastAlert)
 
     if fetch_alerts_data or force_fetch:
+        # No more alertenrichment JOIN — user state lives on LastAlert
+        # typed columns (already the FROM table here).
         sql_query = sql_query.join(
             Alert,
             and_(
                 Alert.id == LastAlert.alert_id, Alert.tenant_id == LastAlert.tenant_id
-            ),
-        ).outerjoin(
-            AlertEnrichment,
-            and_(
-                LastAlert.tenant_id == AlertEnrichment.tenant_id,
-                LastAlert.fingerprint == AlertEnrichment.alert_fingerprint,
             ),
         )
 
@@ -343,7 +446,7 @@ def build_alerts_query(tenant_id, query: QueryDto):
         tenant_id,
         select_args=[
             Alert,
-            AlertEnrichment,
+            LastAlert,
             LastAlert.first_timestamp.label("started_at"),
         ]
         + distinct_columns,
@@ -418,12 +521,16 @@ def query_last_alerts(tenant_id, query: QueryDto) -> Tuple[list[Alert], int]:
             return [], 0
 
         # Process results based on dialect
+        # alert_data = (Alert, LastAlert, started_at). The CEL field
+        # config + query builders now map alert user-state (status/assignee/note/
+        # dismiss_mode/dismissed_until/deleted) and the relocated tracking fields
+        # to typed LastAlert columns — the alertenrichment JOIN and the catch-all
+        # `*` JSON mapping have been removed (mirrors keep-api-gateway). The DTO
+        # builder (convert_db_alerts_to_dto_alerts) re-fetches the LastAlert row
+        # by fingerprint, so we only carry the Alert forward here.
         alerts = []
         for alert_data in alerts_with_start:
             alert: Alert = alert_data[0]
-            alert.alert_enrichment = alert_data[1]
-            if not alert.started_at:
-                alert.started_at = str(alert_data[2])
             alerts.append(alert)
 
         return alerts, total_count
