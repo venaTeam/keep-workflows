@@ -46,6 +46,12 @@ class DbAuthVerifier(AuthVerifierBase):
         return AuthenticatedEntity(tenant_id, email, None, role_name)
 
     # create user for auto-provisioning
-    def _provision_user(self, tenant_id, user_name, role):
-        if not user_exists(tenant_id, user_name):
-            create_user(tenant_id=tenant_id, username=user_name, role=role, password="")
+    def _provision_user(self, tenant_id, user_name, role, session=None):
+        if not user_exists(tenant_id, user_name, session=session):
+            create_user(
+                tenant_id=tenant_id,
+                username=user_name,
+                role=role,
+                password="",
+                session=session,
+            )
