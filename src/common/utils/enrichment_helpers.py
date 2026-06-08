@@ -265,8 +265,6 @@ def convert_db_alerts_to_dto_alerts(
                                     + "Z"
                                 )
                             enrichments[_col] = _val
-                    # Derived backward-compat flag.
-                    enrichments["dismissed"] = last_alert.status == "suppressed"
 
                 alert_payload = alert.dict()
                 # Ensure ID is a string for AlertDto

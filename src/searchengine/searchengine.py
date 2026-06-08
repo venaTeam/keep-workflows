@@ -215,8 +215,7 @@ class SearchEngine:
                     firing_filtered_alerts = list(
                         filter(
                             lambda alert: alert.status == AlertStatus.FIRING.value
-                            and not alert.deleted
-                            and not alert.dismissed,
+                            and not alert.deleted,
                             filtered_alerts,
                         )
                     )
@@ -232,7 +231,6 @@ class SearchEngine:
                     alert.isNoisy
                     and alert.status == AlertStatus.FIRING.value
                     and not alert.deleted
-                    and not alert.dismissed
                     for alert in filtered_alerts
                 ):
                     self.logger.info("Preset is noisy")

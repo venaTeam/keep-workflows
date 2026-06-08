@@ -87,8 +87,6 @@ class AlertDto(BaseModel):
         None  # The fingerprint of the alert (used for alert de-duplication)
     )
     dismiss_until: str | None = Field(default=None, alias="dismissUntil")  # The time until the alert is dismissed
-    # DO NOT MOVE DISMISSED ABOVE dismissedUntil since it is used in root_validator
-    dismissed: bool = False  # Whether the alert has been dismissed
     assignee: str | None = None  # The assignee of the alert
     provider_id: str | None = Field(default=None, alias="providerId")  # The provider id
     provider_type: str | None = Field(default=None, alias="providerType")  # The provider type
@@ -194,32 +192,6 @@ class AlertDto(BaseModel):
             return unix_date
 
         raise ValueError(f"Invalid date format: {last_received}")
-
-    @validator("dismissed", pre=True, always=True)
-    def validate_dismissed(cls, dismissed, values):
-        # normzlize dismissed value
-        if isinstance(dismissed, str):
-            dismissed = dismissed.lower() == "true"
-
-        # if dismissed is False, return False
-        if not dismissed:
-            return dismissed
-
-        # else, validate dismissedUntil
-        dismiss_until = values.get("dismiss_until")
-        # if there's no dismiss_until, return just return dismissed
-        if not dismiss_until or dismiss_until == "forever":
-            return dismissed
-
-        # if there's dismiss_until, validate it
-        dismiss_until_datetime = datetime.datetime.strptime(
-            dismiss_until, "%Y-%m-%dT%H:%M:%S.%fZ"
-        ).replace(tzinfo=datetime.timezone.utc)
-        dismissed = (
-            datetime.datetime.now(datetime.timezone.utc) < dismiss_until_datetime
-        )
-        return dismissed
-
 
     @root_validator(pre=True)
     def set_default_values(cls, values: Dict[str, Any]) -> Dict[str, Any]:
@@ -365,12 +337,14 @@ class EnrichAlertNoteRequestBody(BaseModel):
 
 
 class EnrichAlertRequestBody(BaseModel):
-    enrichments: dict[str, str]
+    # Values may be null to clear a typed column (e.g. dismiss_mode/dismissed_until
+    # set to null on restore or when changing status out of suppressed).
+    enrichments: dict[str, Any]
     fingerprint: str
 
 
 class BatchEnrichAlertRequestBody(BaseModel):
-    enrichments: dict[str, str]
+    enrichments: dict[str, Any]
     fingerprints: Optional[list[str]] = None
     cel: Optional[str] = None
 

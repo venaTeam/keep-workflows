@@ -251,20 +251,14 @@ class Alert(SQLModel, table=True):
         arbitrary_types_allowed = True
 
 
-class AlertEnrichment(SQLModel, table=True):
-    """
-    TODO: we need to rename this table to EntityEnrichment since it's not only for alerts anymore.
-    @tb: for example, we use it also for Incidents now.
-    """
-
+class IncidentEnrichment(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     tenant_id: str = Field(foreign_key="tenant.id")
     timestamp: datetime = Field(default_factory=datetime.utcnow)
-    alert_fingerprint: str = Field(unique=True)
-    enrichments: dict = Field(sa_column=Column(JSON().with_variant(PG_JSONB, "postgresql")))
-
-    # `alerts` back-populates relationship removed (Alert no longer
-    # maps alert_enrichment). Class + table retained until a later migration removes the `alertenrichment` table.
+    incident_id: UUID = Field(foreign_key="incident.id", unique=True)
+    enrichments: dict = Field(
+        sa_column=Column(JSON().with_variant(PG_JSONB, "postgresql"))
+    )
 
     class Config:
         arbitrary_types_allowed = True
