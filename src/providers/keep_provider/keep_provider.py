@@ -9,7 +9,7 @@ from html import unescape
 
 import yaml
 
-from src.common.core.db import get_alerts_with_filters
+from src.common.core.db import get_alerts_with_filters, get_enrichments
 from src.common.models.alert import AlertDto, AlertStatus
 from src.common.event_management.process_event_task import process_event
 from src.contextmanager.contextmanager import ContextManager
@@ -111,13 +111,22 @@ class KeepProvider(BaseProvider):
             # distinct if needed
             alerts = []
             if db_alerts:
+                # Enrichment state is built from typed LastAlert columns.
+                enrichment_views = {
+                    view.alert_fingerprint: view
+                    for view in get_enrichments(
+                        self.context_manager.tenant_id,
+                        [alert.fingerprint for alert in db_alerts],
+                    )
+                }
                 for alert in db_alerts:
                     if fingerprints.get(alert.fingerprint) and distinct is True:
                         continue
                     alert_payload = alert.dict()
 
-                    if alert.alert_enrichment:
-                        alert_payload["enrichments"] = alert.alert_enrichment.enrichments
+                    view = enrichment_views.get(alert.fingerprint)
+                    if view and view.enrichments:
+                        alert_payload["enrichments"] = view.enrichments
                     alerts.append(alert_payload)
                     fingerprints[alert.fingerprint] = True
         else:

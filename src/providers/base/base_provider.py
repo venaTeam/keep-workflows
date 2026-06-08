@@ -33,7 +33,6 @@ from src.common.models.action_type import ActionType
 from src.common.models.alert import AlertDto, AlertSeverity, AlertStatus
 from src.common.models.db.topology import TopologyServiceInDto
 from src.common.models.incident import IncidentDto
-from src.common.utils.enrichment_helpers import parse_and_enrich_deleted_and_assignees
 from src.contextmanager.contextmanager import ContextManager
 from src.providers.models.provider_config import ProviderConfig, ProviderScope
 from src.providers.models.provider_method import ProviderMethod
@@ -323,6 +322,14 @@ class BaseProvider(metaclass=abc.ABCMeta):
                 "action_type": ActionType.WORKFLOW_ENRICH,
                 "action_callee": "system",
                 "audit_enabled": audit_enabled,
+                # Route incident enrichment to the legacy AlertEnrichment JSONB
+                # path; alerts use the typed LastAlert columns.
+                "entity_type": entity_type,
+                # Workflow YAML actions emit arbitrary user-defined keys; the
+                # strict typed schema can only persist the known LastAlert
+                # columns, so non-route system writes discard unknowns with a
+                # warning instead of raising 422 (incident path ignores strict).
+                "strict": False,
             }
 
             if _enrichments:
@@ -335,10 +342,14 @@ class BaseProvider(metaclass=abc.ABCMeta):
 
             # todo: incidents do not have disposable enrichments
             if disposable_enrichments and entity_type == "alert":
-                # enrich with disposable enrichments
-                enrichments_bl.disposable_enrich_entity(
+                # disposable enrichments route through the typed enrich
+                # path with dispose_on_new_alert=True, which sets the
+                # status_disposable column so set_last_alert clears the status on
+                # the next non-resolved re-fire.
+                enrichments_bl.enrich_entity(
                     enrichments=disposable_enrichments,
                     action_description=f"Workflow enriched the {entity_type} with {disposable_enrichment_string}",
+                    dispose_on_new_alert=True,
                     **common_kwargs,
                 )
 
@@ -607,16 +618,33 @@ class BaseProvider(metaclass=abc.ABCMeta):
                         alert_enrichment.alert_fingerprint
                     )
                     for alert_to_enrich in alerts_to_enrich:
-                        parse_and_enrich_deleted_and_assignees(
-                            alert_to_enrich, alert_enrichment.enrichments
-                        )
-                        for enrichment in alert_enrichment.enrichments:
-                            # set the enrichment
-                            setattr(
-                                alert_to_enrich,
-                                enrichment,
-                                alert_enrichment.enrichments[enrichment],
-                            )
+                        # alert_enrichment.enrichments is the typed
+                        # user-state dict built from LastAlert columns
+                        # (status/assignee/note/dismiss_mode/dismissed_until/
+                        # deleted + derived `dismissed`). `deleted` and
+                        # `assignee` are direct values now, NOT the legacy
+                        # timestamp-list/dict — so the old
+                        # `parse_and_enrich_deleted_and_assignees` would
+                        # TypeError here. `dismissed_until` arrives as a
+                        # datetime from the typed column but AlertDto expects a
+                        # str | None, so it is coerced just below.
+                        # NOTE: coerce dismissed_until to the canonical UTC
+                        # "...Z" string (matches keep-api-gateway /
+                        # _build_enrichments), NOT isoformat() which emits
+                        # "+00:00". (Largely a dead path; `enrichments` is
+                        # already coerced upstream.)
+                        for key, value in alert_enrichment.enrichments.items():
+                            if (
+                                key == "dismissed_until"
+                                and isinstance(value, datetime.datetime)
+                            ):
+                                value = (
+                                    value.astimezone(
+                                        datetime.timezone.utc
+                                    ).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
+                                    + "Z"
+                                )
+                            setattr(alert_to_enrich, key, value)
 
         return grouped_alerts
 
@@ -784,7 +812,6 @@ class BaseProvider(metaclass=abc.ABCMeta):
             duplicate_reason=alert_data.get("duplicate_reason", None),
             service=alert_data.get("service", "alert-from-event-queue"),
             source=alert_data.get("source", [self.provider_type]),
-            message=alert_data.get("message", "alert-from-event-queue"),
             description=alert_data.get("description", "alert-from-event-queue"),
             severity=alert_data.get("severity", AlertSeverity.INFO),
             pushed=alert_data.get("pushed", False),
@@ -978,7 +1005,7 @@ class ProviderHealthMixin:
                 for idx, pattern in enumerate(compiled_patterns):
                     if idx in matched_patterns:
                         continue
-                    if pattern.search(alert.message):
+                    if alert.description and pattern.search(alert.description):
                         matched_patterns.add(idx)
 
             health["rules"] = {

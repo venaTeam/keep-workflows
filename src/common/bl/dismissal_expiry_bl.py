@@ -2,7 +2,10 @@
 Business logic for handling dismissal expiry.
 
 This module provides functionality to automatically expire alert dismissals
-when their dismissedUntil timestamp has passed.
+when their dismissed_until timestamp has passed.
+
+Dismiss state lives on typed LastAlert columns (status, dismiss_mode,
+dismissed_until) instead of the alertenrichment JSONB column.
 """
 
 import datetime
@@ -12,139 +15,60 @@ from typing import List, Optional
 from sqlmodel import Session, select
 
 from src.common.core.db import get_session_sync
-from src.common.core.db_utils import get_json_extract_field
 from src.common.core.elastic import ElasticClient
 from src.common.core.sse import notify_sse
 from src.common.models.action_type import ActionType
 from src.common.models.alert import AlertDto
-from src.common.models.db.alert import Alert, AlertAudit, AlertEnrichment
+from src.common.models.db.alert import Alert, AlertAudit, LastAlert
 
 
 class DismissalExpiryBl:
     @staticmethod
-    def get_alerts_with_expired_dismissals(session: Session) -> List[AlertEnrichment]:
+    def get_alerts_with_expired_dismissals(session: Session) -> List[LastAlert]:
         """
-        Get all AlertEnrichment records that have expired dismissedUntil timestamps.
+        Get all LastAlert records whose dismiss_until has expired.
 
-        Returns enrichment records where:
-        1. dismissed = true
-        2. dismissedUntil is not null and not "forever"
-        3. dismissedUntil timestamp is in the past
+        Returns rows where:
+        1. dismiss_mode = 'dismiss_until'
+        2. dismissed_until is not null and in the past
 
         Args:
             session: Database session
 
         Returns:
-            List of AlertEnrichment objects with expired dismissals
+            List of LastAlert objects with expired dismissals
         """
         logger = logging.getLogger(__name__)
-        now = datetime.datetime.now()
+        now = datetime.datetime.now(tz=datetime.timezone.utc)
 
-        logger.info("Searching for enrichments with expired dismissals")
-
-        # Query for enrichments with dismissed=true and dismissedUntil set
-        # Use the proper helper function for cross-database compatibility
-        dismissed_field = get_json_extract_field(
-            session, AlertEnrichment.enrichments, "dismissed"
-        )
-        dismissed_until_field = get_json_extract_field(
-            session, AlertEnrichment.enrichments, "dismiss_until"
-        )
-
-        # Build cross-database compatible boolean comparison
-        # Different databases store/extract JSON booleans differently:
-        # - SQLite: json_extract can return 1/0 for true/false OR "True"/"False"/"true"/"false" strings depending on how data was stored
-        # - MySQL: JSON_UNQUOTE(JSON_EXTRACT()) returns "true"/"false" strings (lowercase)
-        # - PostgreSQL: jsonb_extract_path_text() returns "true"/"false" strings (lowercase) OR "True"/"False" (depending on input)
-        if session.bind.dialect.name == "sqlite":
-            # Handle both integer and string representations in SQLite
-            dismissed_condition = (
-                (dismissed_field == 1)
-                | (dismissed_field == "True")
-                | (dismissed_field == "true")
-            )
-        elif session.bind.dialect.name == "postgresql":
-            # PostgreSQL can return both "true"/"false" and "True"/"False" depending on how the data was stored
-            dismissed_condition = (dismissed_field == "true") | (
-                dismissed_field == "True"
-            )
-        else:
-            # For MySQL, compare with lowercase string "true"
-            dismissed_condition = dismissed_field == "true"
+        logger.info("Searching for last alerts with expired dismissals")
 
         query = session.exec(
-            select(AlertEnrichment).where(
-                dismissed_condition,
-                # dismissedUntil is not null
-                dismissed_until_field.isnot(None),
-                # dismissedUntil is not "forever"
-                dismissed_until_field != "forever",
+            select(LastAlert).where(
+                LastAlert.dismiss_mode == "dismiss_until",
+                LastAlert.dismissed_until.isnot(None),
+                LastAlert.dismissed_until < now,
             )
         )
 
-        candidate_enrichments = query.all()
+        expired = query.all()
 
-        logger.info(
-            f"Found {len(candidate_enrichments)} candidate enrichments with dismissals"
-        )
-
-        # Filter in Python for safety and clarity (parsing ISO timestamps)
-        expired_enrichments = []
-        for enrichment in candidate_enrichments:
-            dismiss_until_str = enrichment.enrichments.get("dismiss_until")
-            if not dismiss_until_str or dismiss_until_str == "forever":
-                continue
-
-            try:
-                # Parse the dismissedUntil timestamp
-                dismiss_until = datetime.datetime.strptime(
-                    dismiss_until_str, "%Y-%m-%dT%H:%M:%S.%fZ"
-                ).replace(tzinfo=None)
-
-                # Check if it's expired (current time > dismissedUntil)
-                if now > dismiss_until:
-                    logger.info(
-                        f"Found expired dismissal for fingerprint {enrichment.alert_fingerprint}",
-                        extra={
-                            "tenant_id": enrichment.tenant_id,
-                            "fingerprint": enrichment.alert_fingerprint,
-                            "dismissed_until": dismiss_until_str,
-                            "expired_by_seconds": (now - dismiss_until).total_seconds(),
-                        },
-                    )
-                    expired_enrichments.append(enrichment)
-
-            except (ValueError, TypeError) as e:
-                # Log invalid timestamp but don't fail
-                logger.warning(
-                    f"Invalid dismissedUntil timestamp for fingerprint {enrichment.alert_fingerprint}: {dismiss_until_str}",
-                    extra={
-                        "tenant_id": enrichment.tenant_id,
-                        "fingerprint": enrichment.alert_fingerprint,
-                        "error": str(e),
-                    },
-                )
-                continue
-
-        logger.info(
-            f"Found {len(expired_enrichments)} enrichments with expired dismissals"
-        )
-        return expired_enrichments
+        logger.info(f"Found {len(expired)} last alerts with expired dismissals")
+        return expired
 
     @staticmethod
     def check_dismissal_expiry(
         logger: logging.Logger, session: Optional[Session] = None
     ):
         """
-        Check for alerts with expired dismissedUntil and restore them.
+        Check for alerts with expired dismissed_until and restore them.
 
         This function:
-        1. Finds AlertEnrichment records with expired dismissedUntil timestamps
-        2. Updates their enrichments to set dismissed=false and dismissedUntil=null
-        3. Cleans up disposable fields
-        4. Updates Elasticsearch indexes
-        5. Notifies UI of changes
-        6. Adds audit trail
+        1. Finds LastAlert records with expired dismissed_until timestamps
+        2. Resets status=NULL, dismiss_mode=NULL, dismissed_until=NULL
+        3. Updates Elasticsearch indexes
+        4. Notifies UI of changes
+        5. Adds audit trail
 
         Args:
             logger: Logger instance for detailed logging
@@ -156,205 +80,143 @@ class DismissalExpiryBl:
             session = get_session_sync()
 
         try:
-            # Find enrichments with expired dismissedUntil
-            expired_enrichments = DismissalExpiryBl.get_alerts_with_expired_dismissals(
-                session
+            expired_last_alerts = (
+                DismissalExpiryBl.get_alerts_with_expired_dismissals(session)
             )
 
-            if not expired_enrichments:
-                logger.info("No enrichments with expired dismissals found")
+            if not expired_last_alerts:
+                logger.info("No last alerts with expired dismissals found")
                 return
 
             logger.info(
-                f"Processing {len(expired_enrichments)} expired dismissal enrichments"
+                f"Processing {len(expired_last_alerts)} expired dismissal last alerts"
             )
 
-            # Process each expired enrichment
-            for enrichment in expired_enrichments:
+            for last_alert in expired_last_alerts:
                 logger.info(
-                    f"Processing expired dismissal for fingerprint {enrichment.alert_fingerprint}",
+                    f"Processing expired dismissal for fingerprint {last_alert.fingerprint}",
                     extra={
-                        "tenant_id": enrichment.tenant_id,
-                        "fingerprint": enrichment.alert_fingerprint,
-                        "dismissed_until": enrichment.enrichments.get("dismissedUntil"),
+                        "tenant_id": last_alert.tenant_id,
+                        "fingerprint": last_alert.fingerprint,
+                        "dismissed_until": str(last_alert.dismissed_until),
                     },
                 )
 
                 # Store original values for audit
-                original_dismissed = enrichment.enrichments.get("dismissed", False)
-                original_dismissed_until = enrichment.enrichments.get("dismissedUntil")
+                original_dismissed_until = last_alert.dismissed_until
 
-                # Update enrichment - set back to not dismissed
-                new_enrichments = enrichment.enrichments.copy()
-                new_enrichments["dismissed"] = False
-                new_enrichments["dismiss_until"] = None  # Clear the original field
-
-                # Reset status if it was set to suppressed during dismissal
-                enrichment_status = enrichment.enrichments.get("status")
-                if enrichment_status == "suppressed":
-                    # Remove the suppressed status entirely - let the system use the original alert status
-                    # The AlertDto will get the status from the original alert event data
-                    new_enrichments.pop("status", None)
-                    logger.info(
-                        f"Removed suppressed status for fingerprint {enrichment.alert_fingerprint} - will use original alert status",
-                        extra={
-                            "tenant_id": enrichment.tenant_id,
-                            "fingerprint": enrichment.alert_fingerprint,
-                            "removed_status": enrichment_status,
-                        },
-                    )
-
-                # Clean up ALL disposable fields (use pattern matching instead of hardcoded list)
-                cleaned_fields = []
-                keys_to_remove = []
-                for field_name in new_enrichments.keys():
-                    if field_name.startswith("disposable_"):
-                        keys_to_remove.append(field_name)
-                        cleaned_fields.append(field_name)
-
-                # Remove the disposable fields
-                for field_name in keys_to_remove:
-                    new_enrichments.pop(field_name)
-
-                if cleaned_fields:
-                    logger.info(
-                        f"Cleaned up disposable fields: {cleaned_fields}",
-                        extra={
-                            "tenant_id": enrichment.tenant_id,
-                            "fingerprint": enrichment.alert_fingerprint,
-                        },
-                    )
-
-                # Update the enrichment record
-                enrichment.enrichments = new_enrichments
-                session.add(enrichment)
+                # Reset dismiss state on the LastAlert row.
+                last_alert.status = None
+                last_alert.dismiss_mode = None
+                last_alert.dismissed_until = None
+                session.add(last_alert)
 
                 # Add audit trail
                 try:
                     audit = AlertAudit(
-                        tenant_id=enrichment.tenant_id,
-                        fingerprint=enrichment.alert_fingerprint,
+                        tenant_id=last_alert.tenant_id,
+                        fingerprint=last_alert.fingerprint,
                         user_id="system",
-                        action=ActionType.DISMISSAL_EXPIRED.value,  # Use .value to get the string
+                        action=ActionType.DISMISSAL_EXPIRED.value,
                         description=(
                             f"Dismissal expired at {original_dismissed_until}, "
-                            f"enrichment updated from dismissed={original_dismissed} to dismissed=False"
+                            f"alert restored (status/dismiss_mode/dismissed_until cleared)"
                         ),
                     )
                     session.add(audit)
                     logger.info(
                         "Added audit trail for expired dismissal",
                         extra={
-                            "tenant_id": enrichment.tenant_id,
-                            "fingerprint": enrichment.alert_fingerprint,
+                            "tenant_id": last_alert.tenant_id,
+                            "fingerprint": last_alert.fingerprint,
                         },
                     )
                 except Exception as e:
                     logger.error(
-                        f"Failed to add audit trail for fingerprint {enrichment.alert_fingerprint}: {e}",
+                        f"Failed to add audit trail for fingerprint {last_alert.fingerprint}: {e}",
                         extra={
-                            "tenant_id": enrichment.tenant_id,
-                            "fingerprint": enrichment.alert_fingerprint,
+                            "tenant_id": last_alert.tenant_id,
+                            "fingerprint": last_alert.fingerprint,
                         },
                     )
 
                 # Update Elasticsearch index
                 try:
-                    # Get the latest alert for this fingerprint to create AlertDto
                     latest_alert = session.exec(
                         select(Alert)
-                        .where(Alert.tenant_id == enrichment.tenant_id)
-                        .where(Alert.fingerprint == enrichment.alert_fingerprint)
+                        .where(Alert.tenant_id == last_alert.tenant_id)
+                        .where(Alert.fingerprint == last_alert.fingerprint)
                         .order_by(Alert.timestamp.desc())
                         .limit(1)
                     ).first()
 
                     if latest_alert:
-                        # Create AlertDto with updated enrichments
+                        # AlertDto built from provider data; dismiss state is now
+                        # cleared, so the DTO reflects the original alert status.
                         alert_data = latest_alert.dict()
-
-                        # Only update specific enrichment fields, don't override alert event data with None values
-                        enrichment_fields = [
-                            "dismissed",
-                            "dismiss_until",
-                            "note",
-                            "assignee",
-                            "status",
-                        ]
-                        for field in enrichment_fields:
-                            if (
-                                field in new_enrichments
-                                and new_enrichments[field] is not None
-                            ):
-                                alert_data[field] = new_enrichments[field]
-                            elif (
-                                field in new_enrichments
-                                and new_enrichments[field] is None
-                                and field in ["dismissed", "dismiss_until"]
-                            ):
-                                # For dismissal fields, None is a valid value (means not dismissed)
-                                alert_data[field] = new_enrichments[field]
+                        alert_data["dismissed"] = False
+                        alert_data["dismiss_until"] = None
 
                         alert_dto = AlertDto(**alert_data)
 
-                        elastic_client = ElasticClient(enrichment.tenant_id)
+                        elastic_client = ElasticClient(last_alert.tenant_id)
                         elastic_client.index_alert(alert_dto)
                         logger.info(
-                            f"Updated Elasticsearch index for fingerprint {enrichment.alert_fingerprint}",
+                            f"Updated Elasticsearch index for fingerprint {last_alert.fingerprint}",
                             extra={
-                                "tenant_id": enrichment.tenant_id,
-                                "fingerprint": enrichment.alert_fingerprint,
+                                "tenant_id": last_alert.tenant_id,
+                                "fingerprint": last_alert.fingerprint,
                             },
                         )
                     else:
                         logger.warning(
-                            f"No alert found for fingerprint {enrichment.alert_fingerprint}, skipping Elasticsearch update",
+                            f"No alert found for fingerprint {last_alert.fingerprint}, skipping Elasticsearch update",
                             extra={
-                                "tenant_id": enrichment.tenant_id,
-                                "fingerprint": enrichment.alert_fingerprint,
+                                "tenant_id": last_alert.tenant_id,
+                                "fingerprint": last_alert.fingerprint,
                             },
                         )
 
                 except Exception as e:
                     logger.error(
-                        f"Failed to update Elasticsearch for fingerprint {enrichment.alert_fingerprint}: {e}",
+                        f"Failed to update Elasticsearch for fingerprint {last_alert.fingerprint}: {e}",
                         extra={
-                            "tenant_id": enrichment.tenant_id,
-                            "fingerprint": enrichment.alert_fingerprint,
+                            "tenant_id": last_alert.tenant_id,
+                            "fingerprint": last_alert.fingerprint,
                         },
                     )
 
                 # Notify UI of change
                 try:
                     notify_sse(
-                        enrichment.tenant_id,
+                        last_alert.tenant_id,
                         "alert-update",
                         {
-                            "fingerprint": enrichment.alert_fingerprint,
+                            "fingerprint": last_alert.fingerprint,
                             "action": "dismissal_expired",
                         },
                     )
                     logger.info(
-                        f"Sent UI notification for fingerprint {enrichment.alert_fingerprint}",
+                        f"Sent UI notification for fingerprint {last_alert.fingerprint}",
                         extra={
-                            "tenant_id": enrichment.tenant_id,
-                            "fingerprint": enrichment.alert_fingerprint,
+                            "tenant_id": last_alert.tenant_id,
+                            "fingerprint": last_alert.fingerprint,
                         },
                     )
                 except Exception as e:
                     logger.error(
-                        f"Failed to send UI notification for fingerprint {enrichment.alert_fingerprint}: {e}",
+                        f"Failed to send UI notification for fingerprint {last_alert.fingerprint}: {e}",
                         extra={
-                            "tenant_id": enrichment.tenant_id,
-                            "fingerprint": enrichment.alert_fingerprint,
+                            "tenant_id": last_alert.tenant_id,
+                            "fingerprint": last_alert.fingerprint,
                         },
                     )
 
             # Commit all changes
             session.commit()
             logger.info(
-                f"Successfully processed {len(expired_enrichments)} expired dismissal enrichments",
-                extra={"processed_count": len(expired_enrichments)},
+                f"Successfully processed {len(expired_last_alerts)} expired dismissal last alerts",
+                extra={"processed_count": len(expired_last_alerts)},
             )
 
         except Exception as e:
