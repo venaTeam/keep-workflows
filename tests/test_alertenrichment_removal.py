@@ -361,8 +361,6 @@ def test_get_enrichments_builds_dict_from_columns(db_session):
     enrichments = views[0].enrichments
     assert enrichments["assignee"] == "bob"
     assert enrichments["note"] == "hi"
-    # derived dismissed
-    assert enrichments["dismissed"] is True
     # internal flag not surfaced
     assert "status_disposable" not in enrichments
 

@@ -2,8 +2,8 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
 
-from sqlalchemy import String, and_, case, cast, func, select
-from sqlalchemy.orm import aliased, foreign
+from sqlalchemy import and_, case, func, select
+from sqlalchemy.orm import aliased
 from sqlmodel import Session, col, text
 
 from src.common.core.alerts import get_alert_potential_facet_fields
@@ -24,7 +24,7 @@ from src.common.core.db import engine, enrich_incidents_with_alerts
 from src.common.core.facets import get_facet_options, get_facets
 from src.common.models.db.alert import (
     Alert,
-    AlertEnrichment,
+    IncidentEnrichment,
     Incident,
     LastAlert,
     LastAlertToIncident,
@@ -145,25 +145,15 @@ for col in Alert.__table__.columns:
     incident_field_configurations.append(
         FieldMappingConfiguration(
             map_from_pattern=f"alert.{col.name}",
-            map_to=[
-                "JSON(alertenrichment.enrichments).*",
-                f"alert.{col.name}",
-            ],
+            map_to=f"alert.{col.name}",
             data_type=special.get("data_type", DataType.STRING),
             enum_values=special.get("enum_values"),
         )
     )
 
-incident_field_configurations.append(
-    FieldMappingConfiguration(
-        map_from_pattern="alert.*",
-        map_to=["JSON(alertenrichment.enrichments).*"],
-    )
-)
-
 properties_metadata = PropertiesMetadata(incident_field_configurations)
 
-incident_enrichment = aliased(AlertEnrichment, name="incidentenrichment")
+incident_enrichment = aliased(IncidentEnrichment, name="incidentenrichment")
 static_facets = [
     FacetDto(
         id="1e7b1d6e-1c2b-4f8e-9f8e-1c2b4f8e9f8e",
@@ -267,21 +257,13 @@ def __build_base_incident_query(
                 Alert,
                 and_(LastAlert.alert_id == Alert.id, LastAlert.tenant_id == tenant_id),
             )
-            .outerjoin(
-                AlertEnrichment,
-                and_(
-                    AlertEnrichment.alert_fingerprint == Alert.fingerprint,
-                    AlertEnrichment.tenant_id == tenant_id,
-                ),
-            )
         )
 
     sql_query = sql_query.outerjoin(
         incident_enrichment,
         and_(
             Incident.tenant_id == incident_enrichment.tenant_id,
-            cast(col(Incident.id), String)
-            == foreign(incident_enrichment.alert_fingerprint),
+            Incident.id == incident_enrichment.incident_id,
         ),
     )
 

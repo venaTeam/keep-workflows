@@ -154,7 +154,6 @@ class DismissalExpiryBl:
                         # AlertDto built from provider data; dismiss state is now
                         # cleared, so the DTO reflects the original alert status.
                         alert_data = latest_alert.dict()
-                        alert_data["dismissed"] = False
                         alert_data["dismiss_until"] = None
 
                         alert_dto = AlertDto(**alert_data)
