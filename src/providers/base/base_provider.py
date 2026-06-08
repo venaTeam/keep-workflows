@@ -322,7 +322,7 @@ class BaseProvider(metaclass=abc.ABCMeta):
                 "action_type": ActionType.WORKFLOW_ENRICH,
                 "action_callee": "system",
                 "audit_enabled": audit_enabled,
-                # Route incident enrichment to the legacy AlertEnrichment JSONB
+                # Route incident enrichment to the IncidentEnrichment JSONB
                 # path; alerts use the typed LastAlert columns.
                 "entity_type": entity_type,
                 # Workflow YAML actions emit arbitrary user-defined keys; the
