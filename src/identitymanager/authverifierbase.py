@@ -10,9 +10,10 @@ from fastapi.security import (
     OAuth2PasswordBearer,
 )
 from starlette.datastructures import FormData
+from sqlmodel import Session
 
 from src.common.core.config import config
-from src.common.core.db import get_api_key, update_key_last_used
+from src.common.core.db import get_api_key, get_session, update_key_last_used
 from src.common.core.dependencies import extract_generic_body
 from src.identitymanager.authenticatedentity import AuthenticatedEntity
 from src.identitymanager.rbac import Admin as AdminRole
@@ -100,6 +101,7 @@ class AuthVerifierBase:
         authorization: Optional[HTTPAuthorizationCredentials] = Security(http_basic),
         token: Optional[str] = Depends(oauth2_scheme),
         body: dict | bytes | FormData = Depends(extract_generic_body),
+        session: Session = Depends(get_session),
     ) -> AuthenticatedEntity:
         """
         Main entry point for authentication and authorization.
@@ -127,7 +129,7 @@ class AuthVerifierBase:
                 )
 
         authenticated_entity = self.authenticate(
-            request, api_key, authorization, token, body
+            request, api_key, authorization, token, body=body, session=session
         )
         self.logger.debug(
             f"Authentication successful for entity: {authenticated_entity}"
@@ -146,6 +148,7 @@ class AuthVerifierBase:
         authorization: Optional[HTTPAuthorizationCredentials],
         token: Optional[str],
         body: Optional[dict | bytes | FormData] = None,
+        session: Optional[Session] = None,
     ) -> AuthenticatedEntity:
         """
         Authenticate the request using either token, API key, or HTTP basic auth.
@@ -184,7 +187,9 @@ class AuthVerifierBase:
         if api_key:
             self.logger.debug("Attempting to authenticate with API key")
             try:
-                return self._verify_api_key(request, api_key, authorization)
+                return self._verify_api_key(
+                    request, api_key, authorization, session=session
+                )
             except HTTPException:
                 raise
             except Exception:
@@ -318,6 +323,7 @@ class AuthVerifierBase:
         request: Request,
         api_key: str = Security(auth_header),
         authorization: HTTPAuthorizationCredentials = Security(http_basic),
+        session: Optional[Session] = None,
     ) -> AuthenticatedEntity:
         """
         Verify the API key and return an authenticated entity.
@@ -334,7 +340,7 @@ class AuthVerifierBase:
             HTTPException: If the API key is invalid.
         """
         self.logger.debug("Verifying API key")
-        tenant_api_key = get_api_key(api_key)
+        tenant_api_key = get_api_key(api_key, session=session)
         if not tenant_api_key:
             self.logger.warning("Invalid API Key")
             raise HTTPException(status_code=401, detail="Invalid API Key")
@@ -359,7 +365,9 @@ class AuthVerifierBase:
             # else, update the key
             else:
                 update_key_last_used(
-                    tenant_api_key.tenant_id, reference_id=tenant_api_key.reference_id
+                    tenant_api_key.tenant_id,
+                    reference_id=tenant_api_key.reference_id,
+                    session=session,
                 )
                 self.key_last_used_updates[
                     f"{tenant_api_key.tenant_id}:{tenant_api_key.reference_id}"
@@ -407,7 +415,9 @@ class AuthVerifierBase:
         # auto provision user
         if self.impersonation_auto_provision:
             self.logger.info(f"Auto provisioning user: {user_name}")
-            self._provision_user(tenant_api_key.tenant_id, user_name, role)
+            self._provision_user(
+                tenant_api_key.tenant_id, user_name, role, session=session
+            )
             self.logger.info(f"User {user_name} provisioned successfully")
 
         self.logger.info("User impersonated successfully")
@@ -418,7 +428,7 @@ class AuthVerifierBase:
             role=role,
         )
 
-    def _provision_user(self, tenant_api_key, user_name, role):
+    def _provision_user(self, tenant_api_key, user_name, role, session=None):
         """
         Create a user for impersonation.
 

@@ -3,6 +3,7 @@ from typing import Optional
 
 from fastapi import Request
 from fastapi.security import HTTPAuthorizationCredentials
+from sqlmodel import Session
 
 from src.common.core.db import get_api_key
 from src.common.core.dependencies import SINGLE_TENANT_EMAIL, SINGLE_TENANT_UUID
@@ -46,8 +47,9 @@ class NoAuthVerifier(AuthVerifierBase):
         request: Request,
         api_key: str,
         authorization: Optional[HTTPAuthorizationCredentials],
+        session: Optional[Session] = None,
     ) -> AuthenticatedEntity:
-        tenant_api_key = get_api_key(api_key)
+        tenant_api_key = get_api_key(api_key, session=session)
         # this is ok, since we are in noauth mode
         if not tenant_api_key:
             return AuthenticatedEntity(

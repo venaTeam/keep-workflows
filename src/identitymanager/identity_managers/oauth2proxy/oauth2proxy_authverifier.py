@@ -2,6 +2,7 @@ from typing import Optional
 
 from fastapi import HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials
+from sqlmodel import Session
 
 from src.common.core.config import config
 from src.common.core.db import (
@@ -43,6 +44,7 @@ class Oauth2proxyAuthVerifier(AuthVerifierBase):
         api_key: str,
         authorization: Optional[HTTPAuthorizationCredentials],
         token: Optional[str],
+        session: Optional[Session] = None,
         *args,
         **kwargs,
     ) -> AuthenticatedEntity:
@@ -54,7 +56,9 @@ class Oauth2proxyAuthVerifier(AuthVerifierBase):
                 if api_key:
                     self.logger.info("Attempting to authenticate with API key")
                     try:
-                        return self._verify_api_key(request, api_key, authorization)
+                        return self._verify_api_key(
+                            request, api_key, authorization, session=session
+                        )
                     except HTTPException:
                         raise
                     except Exception:
@@ -129,23 +133,27 @@ class Oauth2proxyAuthVerifier(AuthVerifierBase):
             )
 
         # auto provision user
-        if self.auto_create_user and not user_exists(
-            tenant_id=SINGLE_TENANT_UUID, username=user_name
-        ):
+        existing_user = user_exists(
+            tenant_id=SINGLE_TENANT_UUID, username=user_name, session=session
+        )
+        if self.auto_create_user and not existing_user:
             self.logger.info(f"Auto provisioning user: {user_name}")
             create_user(
                 tenant_id=SINGLE_TENANT_UUID,
                 username=user_name,
                 role=mapped_role.get_name(),
                 password="",
+                session=session,
             )
             self.logger.info(f"User {user_name} created")
-        elif user_exists(tenant_id=SINGLE_TENANT_UUID, username=user_name):
+        elif existing_user:
             # update last login
             self.logger.debug(f"Updating last login for user: {user_name}")
             try:
                 update_user_last_sign_in(
-                    tenant_id=SINGLE_TENANT_UUID, username=user_name
+                    tenant_id=SINGLE_TENANT_UUID,
+                    username=user_name,
+                    session=session,
                 )
                 self.logger.debug(f"Last login updated for user: {user_name}")
             except Exception:
@@ -160,6 +168,7 @@ class Oauth2proxyAuthVerifier(AuthVerifierBase):
                     tenant_id=SINGLE_TENANT_UUID,
                     username=user_name,
                     role=mapped_role.get_name(),
+                    session=session,
                 )
                 self.logger.debug(f"Role updated for user: {user_name}")
             except Exception:
