@@ -2377,8 +2377,12 @@ def get_alerts_by_status(
         return session.exec(query).all()
 
 
-def get_api_key(api_key: str, include_deleted: bool = False) -> TenantApiKey:
-    with Session(engine) as session:
+def get_api_key(
+    api_key: str,
+    include_deleted: bool = False,
+    session: Optional[Session] = None,
+) -> TenantApiKey:
+    with existed_or_new_session(session) as session:
         api_key_hashed = hashlib.sha256(api_key.encode()).hexdigest()
         statement = select(TenantApiKey).where(TenantApiKey.key_hash == api_key_hashed)
         if not include_deleted:
@@ -2435,10 +2439,10 @@ def delete_user(username):
             session.commit()
 
 
-def user_exists(tenant_id, username):
+def user_exists(tenant_id, username, session: Optional[Session] = None):
     from src.common.models.db.user import User
 
-    with Session(engine) as session:
+    with existed_or_new_session(session) as session:
         user = session.exec(
             select(User)
             .where(User.tenant_id == tenant_id)
@@ -2447,11 +2451,11 @@ def user_exists(tenant_id, username):
         return user is not None
 
 
-def create_user(tenant_id, username, password, role):
+def create_user(tenant_id, username, password, role, session: Optional[Session] = None):
     from src.common.models.db.user import User
 
     password_hash = hashlib.sha256(password.encode()).hexdigest()
-    with Session(engine) as session:
+    with existed_or_new_session(session) as session:
         user = User(
             tenant_id=tenant_id,
             username=username,
@@ -2464,10 +2468,10 @@ def create_user(tenant_id, username, password, role):
     return user
 
 
-def update_user_last_sign_in(tenant_id, username):
+def update_user_last_sign_in(tenant_id, username, session: Optional[Session] = None):
     from src.common.models.db.user import User
 
-    with Session(engine) as session:
+    with existed_or_new_session(session) as session:
         user = session.exec(
             select(User)
             .where(User.tenant_id == tenant_id)
@@ -2480,10 +2484,10 @@ def update_user_last_sign_in(tenant_id, username):
     return user
 
 
-def update_user_role(tenant_id, username, role):
+def update_user_role(tenant_id, username, role, session: Optional[Session] = None):
     from src.common.models.db.user import User
 
-    with Session(engine) as session:
+    with existed_or_new_session(session) as session:
         user = session.exec(
             select(User)
             .where(User.tenant_id == tenant_id)
@@ -3194,6 +3198,7 @@ def update_key_last_used(
     tenant_id: str,
     reference_id: str,
     max_retries=3,
+    session: Optional[Session] = None,
 ) -> str:
     """
     Updates API key last used.
@@ -3206,7 +3211,7 @@ def update_key_last_used(
     Returns:
         str: _description_
     """
-    with Session(engine) as session:
+    with existed_or_new_session(session) as session:
         # Get API Key from database
         statement = (
             select(TenantApiKey)
