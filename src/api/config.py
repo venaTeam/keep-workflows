@@ -34,7 +34,6 @@ KEEP_LIMIT_CONCURRENCY = starlette_config("KEEP_LIMIT_CONCURRENCY", default=None
 KEEP_LIMITER_DEFAULT_LIMIT = starlette_config("KEEP_LIMIT_CONCURRENCY", default="100/minute", cast=str)
 KEEP_METRICS_LIMIT = starlette_config("KEEP_LIMIT_CONCURRENCY", default="10/minute", cast=str)
 
-KEEP_EXTRACT_IDENTITY = starlette_config("KEEP_EXTRACT_IDENTITY", default="true", cast=bool)
 KEEP_READ_ONLY = starlette_config("KEEP_READ_ONLY", default="false", cast=bool)
 KEEP_PROVIDER_DISTRIBUTION_ENABLED = starlette_config("KEEP_PROVIDER_DISTRIBUTION_ENABLED", default="true", cast=bool)
 KEEP_PLATFORM_URL = starlette_config("KEEP_PLATFORM_URL", default="https://platform.keephq.dev")
