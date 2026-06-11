@@ -1,8 +1,8 @@
-# Temp / debug files
+# Temp / debug files (root-level scratch scripts only — tests/ must stay tracked)
 keep.db
 *.out
-trace_*.py
-test_*.py
+/trace_*.py
+/test_*.py
 
 # Python
 __pycache__/

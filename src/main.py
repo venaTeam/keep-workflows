@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 
@@ -18,6 +19,44 @@ HOST = os.environ.get("KEEP_WORKFLOWS_HOST", "0.0.0.0")
 PORT = int(os.environ.get("KEEP_WORKFLOWS_PORT", "8082"))
 
 
+# Keep a reference so the watcher task isn't garbage-collected.
+_watcher_task = None
+
+
+async def start_watcher_if_enabled():
+    """Start the watcher loop (dismissal expiry + maintenance-window recovery).
+
+    Mode flags are read at call time from src.api.config / src.common.consts.
+    Returns the asyncio task for the non-Redis loop, None otherwise.
+    """
+    import src.api.config as api_config
+    import src.common.consts as consts
+    from src.common.event_management import process_watcher_task
+
+    enabled = api_config.WATCHER or (
+        api_config.MAINTENANCE_WINDOWS
+        and consts.MAINTENANCE_WINDOW_ALERT_STRATEGY == "recover_previous_status"
+    )
+    if not enabled:
+        logger.info("Watcher disabled, not starting")
+        return None
+
+    if consts.REDIS:
+        from src.common.arq_pool import get_pool
+
+        redis = await get_pool()
+        job = await redis.enqueue_job(
+            "async_process_watcher",
+            _queue_name=consts.KEEP_ARQ_QUEUE_MAINTENANCE,
+        )
+        logger.info("Enqueued watcher job", extra={"job_id": job.job_id})
+        return None
+
+    task = asyncio.create_task(process_watcher_task.async_process_watcher())
+    logger.info("Watcher task started (dismissal expiry + maintenance recovery)")
+    return task
+
+
 async def startup():
     """Runs on startup for each worker."""
     logger.info("Starting Keep Workflows service")
@@ -28,11 +67,24 @@ async def startup():
     await workflow_manager.start()
     logger.info("Workflow manager started")
 
+    global _watcher_task
+    try:
+        _watcher_task = await start_watcher_if_enabled()
+    except Exception:
+        # Watcher is auxiliary — a failure to start it (e.g. Redis outage on
+        # the arq path) must not take down the API worker.
+        logger.exception("Failed to start the watcher")
+
 
 async def shutdown():
     """Runs on shutdown for each worker."""
     logger.info("Shutting down Keep Workflows service")
     from src.workflowmanager.workflowmanager import WorkflowManager
+
+    global _watcher_task
+    if _watcher_task is not None:
+        _watcher_task.cancel()
+        _watcher_task = None
 
     try:
         wm = WorkflowManager.get_instance()

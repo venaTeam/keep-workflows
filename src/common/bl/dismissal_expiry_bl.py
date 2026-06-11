@@ -76,7 +76,8 @@ class DismissalExpiryBl:
         """
         logger.info("Starting dismissal expiry check")
 
-        if session is None:
+        owns_session = session is None
+        if owns_session:
             session = get_session_sync()
 
         try:
@@ -154,6 +155,10 @@ class DismissalExpiryBl:
                         # AlertDto built from provider data; dismiss state is now
                         # cleared, so the DTO reflects the original alert status.
                         alert_data = latest_alert.dict()
+                        # Alert.id is a UUID; AlertDto.id (alias event_id) requires str.
+                        alert_data["id"] = (
+                            str(latest_alert.id) if latest_alert.id else None
+                        )
                         alert_data["dismiss_until"] = None
 
                         alert_dto = AlertDto(**alert_data)
@@ -223,4 +228,6 @@ class DismissalExpiryBl:
             session.rollback()
             raise
         finally:
+            if owns_session:
+                session.close()
             logger.info("Dismissal expiry check completed")

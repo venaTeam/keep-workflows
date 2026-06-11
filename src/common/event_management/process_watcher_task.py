@@ -78,3 +78,10 @@ async def async_process_watcher(*args):
                     logger.info("Watcher process completed.")
             except Timeout:
                 logger.info("Watcher process is already running, skipping this run.")
+                # Yield before retrying so a held lock can't busy-spin the loop.
+                await asyncio.sleep(WATCHER_LAPSED_TIME)
+            except Exception:
+                # A failed tick (e.g. DB connectivity) must not kill the loop —
+                # log and retry on the next interval.
+                logger.exception("Watcher iteration failed; retrying on next interval.")
+                await asyncio.sleep(WATCHER_LAPSED_TIME)
