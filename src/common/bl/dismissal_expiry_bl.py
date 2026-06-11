@@ -10,13 +10,14 @@ dismissed_until) instead of the alertenrichment JSONB column.
 
 import datetime
 import logging
+import os
 from typing import List, Optional
 
+import requests
 from sqlmodel import Session, select
 
 from src.common.core.db import get_session_sync
 from src.common.core.elastic import ElasticClient
-from src.common.core.sse import notify_sse
 from src.common.models.action_type import ActionType
 from src.common.models.alert import AlertDto
 from src.common.models.db.alert import Alert, AlertAudit, LastAlert
@@ -81,8 +82,8 @@ class DismissalExpiryBl:
             session = get_session_sync()
 
         try:
-            expired_last_alerts = (
-                DismissalExpiryBl.get_alerts_with_expired_dismissals(session)
+            expired_last_alerts = DismissalExpiryBl.get_alerts_with_expired_dismissals(
+                session
             )
 
             if not expired_last_alerts:
@@ -190,31 +191,9 @@ class DismissalExpiryBl:
                         },
                     )
 
-                # Notify UI of change
-                try:
-                    notify_sse(
-                        last_alert.tenant_id,
-                        "alert-update",
-                        {
-                            "fingerprint": last_alert.fingerprint,
-                            "action": "dismissal_expired",
-                        },
-                    )
-                    logger.info(
-                        f"Sent UI notification for fingerprint {last_alert.fingerprint}",
-                        extra={
-                            "tenant_id": last_alert.tenant_id,
-                            "fingerprint": last_alert.fingerprint,
-                        },
-                    )
-                except Exception as e:
-                    logger.error(
-                        f"Failed to send UI notification for fingerprint {last_alert.fingerprint}: {e}",
-                        extra={
-                            "tenant_id": last_alert.tenant_id,
-                            "fingerprint": last_alert.fingerprint,
-                        },
-                    )
+            # Collect tenants before commit (attribute access after commit
+            # would trigger a refresh query per row).
+            tenants_to_notify = {la.tenant_id for la in expired_last_alerts}
 
             # Commit all changes
             session.commit()
@@ -222,6 +201,34 @@ class DismissalExpiryBl:
                 f"Successfully processed {len(expired_last_alerts)} expired dismissal last alerts",
                 extra={"processed_count": len(expired_last_alerts)},
             )
+
+            # Notify the UI after commit, via the gateway's /sse/notify bridge.
+            # The watcher runs outside the gateway process, so the local
+            # in-memory SSE broadcaster cannot reach browser connections —
+            # same pattern as the event handler's post-persist notify. An
+            # empty poll-alerts payload is the UI's "refetch alerts" signal.
+            api_url = os.environ.get("KEEP_API_URL", "http://localhost:8080")
+            for tenant_id in tenants_to_notify:
+                try:
+                    response = requests.post(
+                        f"{api_url}/sse/notify",
+                        json={
+                            "tenant_id": tenant_id,
+                            "event": "poll-alerts",
+                            "data": {},
+                        },
+                        timeout=5,
+                    )
+                    response.raise_for_status()
+                    logger.info(
+                        "Notified UI to refetch alerts after dismissal expiry",
+                        extra={"tenant_id": tenant_id},
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to notify UI after dismissal expiry: {e}",
+                        extra={"tenant_id": tenant_id},
+                    )
 
         except Exception as e:
             logger.error(f"Error during dismissal expiry check: {e}", exc_info=True)

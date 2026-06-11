@@ -80,7 +80,7 @@ def test_expired_dismissal_clears_state_and_audits(db_session):
     _, last_alert = _insert_dismissed_alert(db_session, past)
 
     with patch("src.common.bl.dismissal_expiry_bl.ElasticClient"), patch(
-        "src.common.bl.dismissal_expiry_bl.notify_sse"
+        "src.common.bl.dismissal_expiry_bl.requests"
     ):
         DismissalExpiryBl.check_dismissal_expiry(logger, session=db_session)
 
@@ -101,9 +101,11 @@ def test_future_dismissal_left_untouched(db_session):
     _, last_alert = _insert_dismissed_alert(db_session, future)
 
     with patch("src.common.bl.dismissal_expiry_bl.ElasticClient"), patch(
-        "src.common.bl.dismissal_expiry_bl.notify_sse"
-    ):
+        "src.common.bl.dismissal_expiry_bl.requests"
+    ) as requests_mock:
         DismissalExpiryBl.check_dismissal_expiry(logger, session=db_session)
+
+    requests_mock.post.assert_not_called()
 
     db_session.refresh(last_alert)
     assert last_alert.status == "suppressed"
@@ -118,13 +120,38 @@ def test_expiry_reindexes_alert_in_elastic_with_str_event_id(db_session):
     alert, _ = _insert_dismissed_alert(db_session, past)
 
     with patch("src.common.bl.dismissal_expiry_bl.ElasticClient") as elastic_cls, patch(
-        "src.common.bl.dismissal_expiry_bl.notify_sse"
+        "src.common.bl.dismissal_expiry_bl.requests"
     ):
         DismissalExpiryBl.check_dismissal_expiry(logger, session=db_session)
 
     elastic_cls.return_value.index_alert.assert_called_once()
     dto = elastic_cls.return_value.index_alert.call_args[0][0]
     assert dto.id == str(alert.id)
+
+
+def test_expiry_notifies_ui_via_gateway_sse_bridge(db_session, monkeypatch):
+    """The watcher runs outside the gateway process, so the in-memory SSE
+    broadcaster can't reach the browser. The expiry must POST poll-alerts to
+    the gateway's /sse/notify bridge (same pattern as the event handler) —
+    the UI treats an empty poll-alerts payload as a refetch signal."""
+    monkeypatch.setenv("KEEP_API_URL", "http://gateway:8080")
+    past = datetime.datetime.utcnow() - datetime.timedelta(hours=1)
+    _insert_dismissed_alert(db_session, past)
+
+    with patch("src.common.bl.dismissal_expiry_bl.ElasticClient"), patch(
+        "src.common.bl.dismissal_expiry_bl.requests"
+    ) as requests_mock:
+        DismissalExpiryBl.check_dismissal_expiry(logger, session=db_session)
+
+    requests_mock.post.assert_called_once_with(
+        "http://gateway:8080/sse/notify",
+        json={
+            "tenant_id": SINGLE_TENANT_UUID,
+            "event": "poll-alerts",
+            "data": {},
+        },
+        timeout=5,
+    )
 
 
 def test_recover_strategy_closes_owned_session():
