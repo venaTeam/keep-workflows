@@ -12,6 +12,39 @@ from src.common.consts import REDIS, WATCHER_LAPSED_TIME
 logger = logging.getLogger(__name__)
 
 
+async def start_watcher_if_enabled():
+    """Start the watcher (dismissal expiry + maintenance-window recovery).
+
+    Mode flags are read at call time from src.api.config / src.common.consts.
+    Returns the asyncio task for the non-Redis loop, None otherwise.
+    """
+    import src.api.config as api_config
+    import src.common.consts as consts
+
+    enabled = api_config.WATCHER or (
+        api_config.MAINTENANCE_WINDOWS
+        and consts.MAINTENANCE_WINDOW_ALERT_STRATEGY == "recover_previous_status"
+    )
+    if not enabled:
+        logger.info("Watcher disabled, not starting")
+        return None
+
+    if consts.REDIS:
+        from src.common.arq_pool import get_pool
+
+        redis_pool = await get_pool()
+        job = await redis_pool.enqueue_job(
+            "async_process_watcher",
+            _queue_name=consts.KEEP_ARQ_QUEUE_MAINTENANCE,
+        )
+        logger.info("Enqueued watcher job", extra={"job_id": job.job_id})
+        return None
+
+    task = asyncio.create_task(async_process_watcher())
+    logger.info("Watcher task started (dismissal expiry + maintenance recovery)")
+    return task
+
+
 async def async_process_watcher(*args):
     if REDIS:
         ctx = args[0]

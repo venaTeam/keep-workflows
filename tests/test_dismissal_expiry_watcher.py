@@ -11,7 +11,7 @@ Covers three regressions:
 import asyncio
 import datetime
 import logging
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from sqlmodel import select
@@ -163,12 +163,17 @@ def test_recover_strategy_does_not_close_caller_session():
 
 
 @pytest.mark.asyncio
-async def test_startup_starts_watcher_when_enabled(monkeypatch):
-    """src.main:app is the deployed entrypoint (Dockerfile CMD); its lifespan
-    must start the watcher loop when WATCHER=true and REDIS is off."""
+async def test_start_watcher_if_enabled_starts_loop(monkeypatch):
+    """start_watcher_if_enabled (called by the src.main:app lifespan — the
+    deployed entrypoint) must spawn the watcher loop when WATCHER=true and
+    REDIS is off.
+
+    Deliberately does NOT import src.main: importing it executes get_app()
+    at module level (route-module reload, app construction), which perturbs
+    global state for unrelated tests later in the suite.
+    """
     import src.api.config as api_config
     import src.common.consts as consts
-    import src.main as main_module
     from src.common.event_management import process_watcher_task
 
     started = asyncio.Event()
@@ -180,25 +185,17 @@ async def test_startup_starts_watcher_when_enabled(monkeypatch):
     monkeypatch.setattr(api_config, "WATCHER", True)
     monkeypatch.setattr(consts, "REDIS", False)
 
-    workflow_manager = MagicMock()
-    workflow_manager.start = AsyncMock()
-    with patch(
-        "src.workflowmanager.workflowmanager.WorkflowManager.get_instance",
-        return_value=workflow_manager,
-    ):
-        await main_module.startup()
+    task = await process_watcher_task.start_watcher_if_enabled()
 
-    try:
-        await asyncio.wait_for(started.wait(), timeout=2)
-    finally:
-        main_module._watcher_task = None
+    assert task is not None
+    await asyncio.wait_for(started.wait(), timeout=2)
+    await task
 
 
 @pytest.mark.asyncio
-async def test_startup_skips_watcher_when_disabled(monkeypatch):
+async def test_start_watcher_if_enabled_skips_when_disabled(monkeypatch):
     import src.api.config as api_config
     import src.common.consts as consts
-    import src.main as main_module
     from src.common.event_management import process_watcher_task
 
     watcher_mock = MagicMock()
@@ -207,14 +204,9 @@ async def test_startup_skips_watcher_when_disabled(monkeypatch):
     monkeypatch.setattr(api_config, "MAINTENANCE_WINDOWS", False)
     monkeypatch.setattr(consts, "REDIS", False)
 
-    workflow_manager = MagicMock()
-    workflow_manager.start = AsyncMock()
-    with patch(
-        "src.workflowmanager.workflowmanager.WorkflowManager.get_instance",
-        return_value=workflow_manager,
-    ):
-        await main_module.startup()
+    task = await process_watcher_task.start_watcher_if_enabled()
 
+    assert task is None
     watcher_mock.assert_not_called()
 
 
