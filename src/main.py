@@ -18,6 +18,10 @@ HOST = os.environ.get("KEEP_WORKFLOWS_HOST", "0.0.0.0")
 PORT = int(os.environ.get("KEEP_WORKFLOWS_PORT", "8082"))
 
 
+# Keep a reference so the watcher task isn't garbage-collected.
+_watcher_task = None
+
+
 async def startup():
     """Runs on startup for each worker."""
     logger.info("Starting Keep Workflows service")
@@ -28,11 +32,26 @@ async def startup():
     await workflow_manager.start()
     logger.info("Workflow manager started")
 
+    from src.common.event_management import process_watcher_task
+
+    global _watcher_task
+    try:
+        _watcher_task = await process_watcher_task.start_watcher_if_enabled()
+    except Exception:
+        # Watcher is auxiliary — a failure to start it (e.g. Redis outage on
+        # the arq path) must not take down the API worker.
+        logger.exception("Failed to start the watcher")
+
 
 async def shutdown():
     """Runs on shutdown for each worker."""
     logger.info("Shutting down Keep Workflows service")
     from src.workflowmanager.workflowmanager import WorkflowManager
+
+    global _watcher_task
+    if _watcher_task is not None:
+        _watcher_task.cancel()
+        _watcher_task = None
 
     try:
         wm = WorkflowManager.get_instance()
@@ -87,12 +106,12 @@ def get_app() -> FastAPI:
     ):
         from src.providers.providers_factory import ProvidersFactory
         from src.providers.providers_service import ProvidersService
-        
+
         tenant_id = authenticated_entity.tenant_id
         providers = ProvidersFactory.get_all_providers()
         installed_providers = ProvidersService.get_installed_providers(tenant_id)
         linked_providers = ProvidersService.get_linked_providers(tenant_id)
-        
+
         return {
             "providers": providers,
             "installed_providers": installed_providers,

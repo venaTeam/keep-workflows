@@ -15,6 +15,7 @@ alertenrichment JSONB column:
 
 import logging
 from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -325,9 +326,7 @@ def test_dismissal_expiry_resets_lastalert_columns(db_session, monkeypatch):
         "src.common.bl.dismissal_expiry_bl.ElasticClient",
         lambda *a, **k: type("E", (), {"index_alert": lambda self, dto: None})(),
     )
-    monkeypatch.setattr(
-        "src.common.bl.dismissal_expiry_bl.notify_sse", lambda *a, **k: None
-    )
+    monkeypatch.setattr("src.common.bl.dismissal_expiry_bl.requests", MagicMock())
 
     _, la = _make_alert(db_session, "fp-expire", status=AlertStatus.FIRING.value)
     la.status = "suppressed"
