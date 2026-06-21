@@ -58,6 +58,15 @@ async def shutdown():
         wm.stop()
     except Exception:
         logger.exception("Error stopping workflow manager")
+
+    # Flush any pending SSE notifications queued on the background pool so they
+    # aren't lost on a graceful shutdown.
+    try:
+        from src.common.event_management.process_event_task import shutdown_sse_pool
+
+        shutdown_sse_pool(wait=True)
+    except Exception:
+        logger.exception("Failed to shutdown SSE notify pool")
     logger.info("Keep Workflows shutdown complete")
 
 

@@ -1,18 +1,22 @@
 # builtins
+import atexit
 import copy
 import datetime
 import json
 import logging
 import os
 import sys
+import threading
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from typing import List
 
 # third-parties
 import dateutil
 from arq import Retry
 import requests
+from requests.adapters import HTTPAdapter
 from fastapi.datastructures import FormData
 from opentelemetry import trace
 from sqlalchemy.orm.attributes import flag_modified
@@ -23,7 +27,13 @@ from src.common.alert_deduplicator.alert_deduplicator import AlertDeduplicator
 from src.common.bl.enrichments_bl import EnrichmentsBl
 from src.common.bl.incidents_bl import IncidentBl
 from src.common.bl.maintenance_windows_bl import MaintenanceWindowsBl
-from src.common.consts import KEEP_CORRELATION_ENABLED, MAINTENANCE_WINDOW_ALERT_STRATEGY
+from src.common.consts import (
+    KEEP_CORRELATION_ENABLED,
+    MAINTENANCE_WINDOW_ALERT_STRATEGY,
+    SSE_NOTIFY_WORKERS,
+    SSE_NOTIFY_MAX_PENDING,
+    SSE_NOTIFY_COALESCE_ENABLED,
+)
 from src.common.event_management.error_storm_guard import should_record_error
 from src.common.core.db import (
     bulk_upsert_alert_fields,
@@ -86,6 +96,193 @@ KEEP_CALCULATE_START_FIRING_TIME_ENABLED = (
 
 logger = logging.getLogger(__name__)
 
+# Background pool that delivers SSE notifications off the event-processing
+# thread. It also performs the remaining notify work — alert serialization and
+# the per-preset CEL filtering loop — so none of it runs on the hot path.
+# (Ported from keep-event-handler to bring this still-synchronous copy to
+# parity; cross-repo rule.)
+# SSE_NOTIFY_WORKERS=1 (default) keeps notifications strictly FIFO-ordered; raising
+# it speeds up delivery when the gateway is slow, at the cost of strict ordering
+# (safe here: the UI dedups poll-alerts by fingerprint; other events are idempotent).
+_SSE_NOTIFY_WORKERS = max(1, SSE_NOTIFY_WORKERS)
+_sse_pool = ThreadPoolExecutor(
+    max_workers=_SSE_NOTIFY_WORKERS, thread_name_prefix="sse-notify"
+)
+_sse_session = requests.Session()  # keep-alive / connection reuse across calls
+# Size the connection pool to the worker count so concurrent posts don't contend.
+_sse_session.mount(
+    "http://",
+    HTTPAdapter(pool_connections=_SSE_NOTIFY_WORKERS, pool_maxsize=_SSE_NOTIFY_WORKERS),
+)
+_sse_session.mount(
+    "https://",
+    HTTPAdapter(pool_connections=_SSE_NOTIFY_WORKERS, pool_maxsize=_SSE_NOTIFY_WORKERS),
+)
+# Bounded backpressure for the notify path.
+_SSE_MAX_PENDING = SSE_NOTIFY_MAX_PENDING
+_SSE_COALESCE_ENABLED = SSE_NOTIFY_COALESCE_ENABLED
+
+# Coalescing state: collapse duplicate (tenant_id, event) notifications while
+# they're still pending. poll-alerts / poll-presets are refresh-style "go
+# re-poll" signals, so only the latest payload per key needs to be delivered;
+# this bounds queue depth by tenant-cardinality instead of storm volume.
+_coalesce_lock = threading.Lock()
+# key -> latest (api_url, tenant_id, event, data) awaiting delivery
+_coalesce_pending = {}
+# keys with a drain task currently scheduled/running on the pool
+_coalesce_scheduled = set()
+
+
+def _notify_api(api_url, tenant_id, event, data):
+    try:
+        resp = _sse_session.post(
+            f"{api_url}/sse/notify",
+            json={"tenant_id": tenant_id, "event": event, "data": data},
+            timeout=5,
+        )
+        resp.raise_for_status()
+    except Exception:
+        logger.warning(
+            "SSE notify failed", extra={"event": event, "tenant_id": tenant_id}
+        )
+
+
+def _drain_coalesced(key):
+    """Worker task: deliver the latest pending payload for a coalesced key.
+
+    If a newer payload arrived for the same key after this task was scheduled,
+    it is picked up here (single delivery). If yet another arrives during the
+    POST, the task re-schedules itself so nothing is lost."""
+    while True:
+        with _coalesce_lock:
+            entry = _coalesce_pending.pop(key, None)
+            if entry is None:
+                _coalesce_scheduled.discard(key)
+                return
+        api_url, tenant_id, event, data = entry
+        _notify_api(api_url, tenant_id, event, data)
+
+
+def _submit_notify(api_url, tenant_id, event, data):
+    """Non-blocking: enqueue an SSE notification on the background pool.
+
+    With coalescing enabled (default), duplicate (tenant_id, event) signals
+    collapse to the latest payload, bounded by SSE_NOTIFY_MAX_PENDING distinct
+    keys. With coalescing disabled, falls back to a direct bounded submit so a
+    slow/down gateway can never block or unbounded-grow the consumer."""
+    try:
+        if not _SSE_COALESCE_ENABLED:
+            if _sse_pool._work_queue.qsize() >= _SSE_MAX_PENDING:
+                logger.warning(
+                    "SSE notify dropped (backpressure)",
+                    extra={"event": event, "tenant_id": tenant_id},
+                )
+                return
+            _sse_pool.submit(_notify_api, api_url, tenant_id, event, data)
+            return
+
+        key = (tenant_id, event)
+        schedule = False
+        with _coalesce_lock:
+            # Bound distinct pending keys; a brand-new key over the cap is
+            # dropped, but an existing key is always allowed to refresh.
+            if (
+                key not in _coalesce_pending
+                and len(_coalesce_pending) >= _SSE_MAX_PENDING
+            ):
+                logger.warning(
+                    "SSE notify dropped (coalesce backpressure)",
+                    extra={"event": event, "tenant_id": tenant_id},
+                )
+                return
+            _coalesce_pending[key] = (api_url, tenant_id, event, data)
+            if key not in _coalesce_scheduled:
+                _coalesce_scheduled.add(key)
+                schedule = True
+        if schedule:
+            _sse_pool.submit(_drain_coalesced, key)
+    except Exception:
+        logger.warning(
+            "SSE notify submit failed",
+            extra={"event": event, "tenant_id": tenant_id},
+        )
+
+
+def _submit_preset_notify(api_url, tenant_id, alerts_payload):
+    """Offload the per-preset CEL filtering loop onto the notify pool.
+
+    alerts_payload is a list of already-serialized alert dicts (an immutable
+    snapshot taken on the consumer thread) so the worker never touches live
+    AlertDto / preset objects shared with the consumer. The worker reconstructs
+    fresh AlertDto instances, runs get_all_presets_dtos + filter_alerts, and
+    submits the poll-presets notification."""
+    try:
+        _sse_pool.submit(_run_preset_filter, api_url, tenant_id, alerts_payload)
+    except Exception:
+        logger.warning(
+            "SSE preset notify submit failed",
+            extra={"event": "poll-presets", "tenant_id": tenant_id},
+        )
+
+
+def _run_preset_filter(api_url, tenant_id, alerts_payload):
+    """Pool worker: reconstruct alerts, run preset CEL filtering, notify."""
+    try:
+        # Reconstruct fresh AlertDto objects from the snapshot dicts; never
+        # share mutable state with the consumer thread.
+        alerts = [AlertDto(**alert_dict) for alert_dict in alerts_payload]
+        notification_cache = get_notification_cache()
+        presets = get_all_presets_dtos(tenant_id)
+        rules_engine = RulesEngine(tenant_id=tenant_id)
+        presets_do_update = []
+        for preset_dto in presets:
+            filtered_alerts = rules_engine.filter_alerts(alerts, preset_dto.cel_query)
+            if not filtered_alerts:
+                continue
+            presets_do_update.append(preset_dto)
+        if notification_cache.should_notify(tenant_id, "poll-presets"):
+            _submit_notify(
+                api_url,
+                tenant_id,
+                "poll-presets",
+                {"preset_names": [p.name.lower() for p in presets_do_update]},
+            )
+    except Exception:
+        logger.exception(
+            "Failed to send presets via SSE",
+            extra={"tenant_id": tenant_id},
+        )
+
+
+def shutdown_sse_pool(wait: bool = True):
+    """Flush pending SSE notifications on graceful shutdown."""
+    _sse_pool.shutdown(wait=wait)
+
+
+def rebuild_sse_pool():
+    """Replace the (possibly shut-down) notify pool with a fresh started one,
+    and clear coalescing state.
+
+    Used by tests to hand each case a clean, started worker so a prior
+    shutdown_sse_pool() call can't leave a dead executor behind for the next
+    test. Not used in production code paths.
+    """
+    global _sse_pool
+    with _coalesce_lock:
+        _coalesce_pending.clear()
+        _coalesce_scheduled.clear()
+    _sse_pool = ThreadPoolExecutor(
+        max_workers=_SSE_NOTIFY_WORKERS, thread_name_prefix="sse-notify"
+    )
+    return _sse_pool
+
+
+# keep-workflows runs process_event inside an arq worker hosted by the gunicorn
+# FastAPI process; the cleanest in-process graceful-stop hook is main.shutdown()
+# (wired there). atexit is the belt-and-suspenders flush so queued notifications
+# aren't lost if the worker exits without going through that hook.
+atexit.register(lambda: shutdown_sse_pool(wait=True))
+
 
 def _serialize_event_for_logging(event, max_size: int = 1000):
     """
@@ -123,12 +320,16 @@ def _serialize_event_for_logging(event, max_size: int = 1000):
                         {
                             "count": len(event),
                             "first_item": {
-                                "fingerprint": first_item.fingerprint
-                                if hasattr(first_item, "fingerprint")
-                                else None,
-                                "name": first_item.name
-                                if hasattr(first_item, "name")
-                                else None,
+                                "fingerprint": (
+                                    first_item.fingerprint
+                                    if hasattr(first_item, "fingerprint")
+                                    else None
+                                ),
+                                "name": (
+                                    first_item.name
+                                    if hasattr(first_item, "name")
+                                    else None
+                                ),
                             },
                         },
                         default=str,
@@ -186,7 +387,9 @@ def __validate_last_received(event):
     # tb: we do this because `AlertDto` object last_received is a string and not a datetime object
     # TODO: `AlertDto` object `last_received` should be a datetime object so we can easily validate with pydantic
     if not event.last_received:
-        event.last_received = datetime.datetime.now(tz=datetime.timezone.utc).isoformat()
+        event.last_received = datetime.datetime.now(
+            tz=datetime.timezone.utc
+        ).isoformat()
     else:
         try:
             dateutil.parser.isoparse(event.last_received)
@@ -216,9 +419,9 @@ def __save_to_db(
             "formatted_events_count": len(formatted_events),
             "deduplicated_events_count": len(deduplicated_events),
             "raw_events_count": len(raw_events) if isinstance(raw_events, list) else 1,
-            "session_active": session.is_active
-            if hasattr(session, "is_active")
-            else "unknown",
+            "session_active": (
+                session.is_active if hasattr(session, "is_active") else "unknown"
+            ),
         },
     )
     try:
@@ -229,9 +432,9 @@ def __save_to_db(
                 "Storing raw alerts",
                 extra={
                     "tenant_id": tenant_id,
-                    "raw_events_count": len(raw_events)
-                    if isinstance(raw_events, list)
-                    else 1,
+                    "raw_events_count": (
+                        len(raw_events) if isinstance(raw_events, list) else 1
+                    ),
                 },
             )
             if isinstance(raw_events, dict):
@@ -382,12 +585,16 @@ def __save_to_db(
                 extra={
                     "tenant_id": tenant_id,
                     "event_index": idx,
-                    "fingerprint": formatted_event.fingerprint
-                    if hasattr(formatted_event, "fingerprint")
-                    else None,
-                    "event_name": formatted_event.name
-                    if hasattr(formatted_event, "name")
-                    else None,
+                    "fingerprint": (
+                        formatted_event.fingerprint
+                        if hasattr(formatted_event, "fingerprint")
+                        else None
+                    ),
+                    "event_name": (
+                        formatted_event.name
+                        if hasattr(formatted_event, "name")
+                        else None
+                    ),
                 },
             )
             formatted_event.pushed = True
@@ -448,16 +655,18 @@ def __save_to_db(
                 extra={
                     "tenant_id": tenant_id,
                     "event_index": idx,
-                    "fingerprint": formatted_event.fingerprint
-                    if hasattr(formatted_event, "fingerprint")
-                    else None,
+                    "fingerprint": (
+                        formatted_event.fingerprint
+                        if hasattr(formatted_event, "fingerprint")
+                        else None
+                    ),
                 },
             )
             from src.common.models.db.alert import Alert
             import json
-            
+
             event_dict = formatted_event.dict()
-            
+
             alert_args = {
                 "tenant_id": tenant_id,
                 "provider_type": (
@@ -469,37 +678,74 @@ def __save_to_db(
                 "fingerprint": formatted_event.fingerprint,
                 "alert_hash": formatted_event.alert_hash,
             }
-            
+
             # If it's an internal "keep" event (e.g. status update), inherit fields from the last alert
             # to prevent resetting them to None/defaults
-            if provider_type == "keep" or (formatted_event.source and formatted_event.source[0] == "keep"):
+            if provider_type == "keep" or (
+                formatted_event.source and formatted_event.source[0] == "keep"
+            ):
                 from src.common.core.db import get_last_alert_by_fingerprint
-                last_alert = get_last_alert_by_fingerprint(tenant_id, formatted_event.fingerprint, session=session)
+
+                last_alert = get_last_alert_by_fingerprint(
+                    tenant_id, formatted_event.fingerprint, session=session
+                )
                 if last_alert:
                     # Fetch the actual previous Alert object to inherit fields from
                     previous_alert = session.get(Alert, last_alert.alert_id)
                     if previous_alert:
                         # Inherit core columns
                         for field in Alert.__fields__:
-                            if field not in ["id", "timestamp", "tenant_id", "fingerprint"]:
+                            if field not in [
+                                "id",
+                                "timestamp",
+                                "tenant_id",
+                                "fingerprint",
+                            ]:
                                 val = getattr(previous_alert, field)
                                 if val is not None:
                                     alert_args[field] = val
 
             # Fields to ignore when populating core columns
             FIELDS_TO_IGNORE = {
-                "event_id", "firstTimestamp", "id", "providerId", "service", 
-                "imageUrl", "url", "description_format", "apiKeyRef", 
-                "grafana", "incident_dto", "environment", "labels", 
-                "pushed", "deleted", "isNoisy", "maintenance_windows_trace",
-                "ticket_url", "action_type", "action_callee", "action_description",
-                "audit_enabled", "force"
+                "event_id",
+                "firstTimestamp",
+                "id",
+                "providerId",
+                "service",
+                "imageUrl",
+                "url",
+                "description_format",
+                "apiKeyRef",
+                "grafana",
+                "incident_dto",
+                "environment",
+                "labels",
+                "pushed",
+                "deleted",
+                "isNoisy",
+                "maintenance_windows_trace",
+                "ticket_url",
+                "action_type",
+                "action_callee",
+                "action_description",
+                "audit_enabled",
+                "force",
             }
-            
+
             for key, value in event_dict.items():
-                if key in ["tenant_id", "provider_type", "provider_id", "fingerprint", "alert_hash"] or key in FIELDS_TO_IGNORE:
+                if (
+                    key
+                    in [
+                        "tenant_id",
+                        "provider_type",
+                        "provider_id",
+                        "fingerprint",
+                        "alert_hash",
+                    ]
+                    or key in FIELDS_TO_IGNORE
+                ):
                     continue
-                
+
                 # Handle core columns
                 if key in Alert.__fields__:
                     val_to_set = None
@@ -509,15 +755,19 @@ def __save_to_db(
                         val_to_set = json.dumps(value)
                     else:
                         val_to_set = value
-                    
+
                     # Only set if not already set by inheritance, or if it's a meaningful update
                     # (e.g. don't overwrite inherited name with "unknown alert name")
-                    if key == "name" and val_to_set == "unknown alert name" and alert_args.get("name"):
+                    if (
+                        key == "name"
+                        and val_to_set == "unknown alert name"
+                        and alert_args.get("name")
+                    ):
                         continue
-                    
+
                     if val_to_set is not None:
                         alert_args[key] = val_to_set
-                
+
                 # Unknown fields are dropped (no longer stored in extra_data)
 
             alert_args = sanitize_alert(alert_args)
@@ -540,9 +790,11 @@ def __save_to_db(
                 extra={
                     "tenant_id": tenant_id,
                     "event_index": idx,
-                    "fingerprint": formatted_event.fingerprint
-                    if hasattr(formatted_event, "fingerprint")
-                    else None,
+                    "fingerprint": (
+                        formatted_event.fingerprint
+                        if hasattr(formatted_event, "fingerprint")
+                        else None
+                    ),
                     "provider_type": alert_args.get("provider_type"),
                 },
             )
@@ -553,9 +805,11 @@ def __save_to_db(
                     extra={
                         "tenant_id": tenant_id,
                         "event_index": idx,
-                        "fingerprint": formatted_event.fingerprint
-                        if hasattr(formatted_event, "fingerprint")
-                        else None,
+                        "fingerprint": (
+                            formatted_event.fingerprint
+                            if hasattr(formatted_event, "fingerprint")
+                            else None
+                        ),
                     },
                 )
                 session.add(alert)
@@ -564,9 +818,11 @@ def __save_to_db(
                     extra={
                         "tenant_id": tenant_id,
                         "event_index": idx,
-                        "fingerprint": formatted_event.fingerprint
-                        if hasattr(formatted_event, "fingerprint")
-                        else None,
+                        "fingerprint": (
+                            formatted_event.fingerprint
+                            if hasattr(formatted_event, "fingerprint")
+                            else None
+                        ),
                     },
                 )
                 session.flush()
@@ -579,9 +835,11 @@ def __save_to_db(
                         "tenant_id": tenant_id,
                         "event_index": idx,
                         "alert_id": alert_id,
-                        "fingerprint": formatted_event.fingerprint
-                        if hasattr(formatted_event, "fingerprint")
-                        else None,
+                        "fingerprint": (
+                            formatted_event.fingerprint
+                            if hasattr(formatted_event, "fingerprint")
+                            else None
+                        ),
                     },
                 )
             except Exception as e:
@@ -590,9 +848,11 @@ def __save_to_db(
                     extra={
                         "tenant_id": tenant_id,
                         "event_index": idx,
-                        "fingerprint": formatted_event.fingerprint
-                        if hasattr(formatted_event, "fingerprint")
-                        else None,
+                        "fingerprint": (
+                            formatted_event.fingerprint
+                            if hasattr(formatted_event, "fingerprint")
+                            else None
+                        ),
                         "error_type": type(e).__name__,
                         "error_message": str(e),
                         "alert_args_keys": list(alert_args.keys()),
@@ -606,12 +866,16 @@ def __save_to_db(
                     extra={
                         "tenant_id": tenant_id,
                         "event_index": idx,
-                        "fingerprint": formatted_event.fingerprint
-                        if hasattr(formatted_event, "fingerprint")
-                        else None,
-                        "status": formatted_event.status
-                        if hasattr(formatted_event, "status")
-                        else None,
+                        "fingerprint": (
+                            formatted_event.fingerprint
+                            if hasattr(formatted_event, "fingerprint")
+                            else None
+                        ),
+                        "status": (
+                            formatted_event.status
+                            if hasattr(formatted_event, "status")
+                            else None
+                        ),
                     },
                 )
                 try:
@@ -632,9 +896,11 @@ def __save_to_db(
                         extra={
                             "tenant_id": tenant_id,
                             "event_index": idx,
-                            "fingerprint": formatted_event.fingerprint
-                            if hasattr(formatted_event, "fingerprint")
-                            else None,
+                            "fingerprint": (
+                                formatted_event.fingerprint
+                                if hasattr(formatted_event, "fingerprint")
+                                else None
+                            ),
                         },
                     )
                 except Exception as e:
@@ -643,9 +909,11 @@ def __save_to_db(
                         extra={
                             "tenant_id": tenant_id,
                             "event_index": idx,
-                            "fingerprint": formatted_event.fingerprint
-                            if hasattr(formatted_event, "fingerprint")
-                            else None,
+                            "fingerprint": (
+                                formatted_event.fingerprint
+                                if hasattr(formatted_event, "fingerprint")
+                                else None
+                            ),
                             "error_type": type(e).__name__,
                             "error_message": str(e),
                         },
@@ -656,9 +924,11 @@ def __save_to_db(
                 extra={
                     "tenant_id": tenant_id,
                     "event_index": idx,
-                    "fingerprint": formatted_event.fingerprint
-                    if hasattr(formatted_event, "fingerprint")
-                    else None,
+                    "fingerprint": (
+                        formatted_event.fingerprint
+                        if hasattr(formatted_event, "fingerprint")
+                        else None
+                    ),
                 },
             )
             try:
@@ -668,9 +938,11 @@ def __save_to_db(
                     extra={
                         "tenant_id": tenant_id,
                         "event_index": idx,
-                        "fingerprint": formatted_event.fingerprint
-                        if hasattr(formatted_event, "fingerprint")
-                        else None,
+                        "fingerprint": (
+                            formatted_event.fingerprint
+                            if hasattr(formatted_event, "fingerprint")
+                            else None
+                        ),
                     },
                 )
                 session.flush()
@@ -680,9 +952,11 @@ def __save_to_db(
                         "tenant_id": tenant_id,
                         "event_index": idx,
                         "alert_id": alert_id,
-                        "fingerprint": formatted_event.fingerprint
-                        if hasattr(formatted_event, "fingerprint")
-                        else None,
+                        "fingerprint": (
+                            formatted_event.fingerprint
+                            if hasattr(formatted_event, "fingerprint")
+                            else None
+                        ),
                     },
                 )
                 # The relocated system tracking fields are written to the
@@ -714,9 +988,11 @@ def __save_to_db(
                         "tenant_id": tenant_id,
                         "event_index": idx,
                         "alert_id": alert_id,
-                        "fingerprint": formatted_event.fingerprint
-                        if hasattr(formatted_event, "fingerprint")
-                        else None,
+                        "fingerprint": (
+                            formatted_event.fingerprint
+                            if hasattr(formatted_event, "fingerprint")
+                            else None
+                        ),
                     },
                 )
             except Exception as e:
@@ -726,9 +1002,11 @@ def __save_to_db(
                         "tenant_id": tenant_id,
                         "event_index": idx,
                         "alert_id": alert_id if "alert_id" in locals() else None,
-                        "fingerprint": formatted_event.fingerprint
-                        if hasattr(formatted_event, "fingerprint")
-                        else None,
+                        "fingerprint": (
+                            formatted_event.fingerprint
+                            if hasattr(formatted_event, "fingerprint")
+                            else None
+                        ),
                         "error_type": type(e).__name__,
                         "error_message": str(e),
                     },
@@ -746,9 +1024,11 @@ def __save_to_db(
                 extra={
                     "tenant_id": tenant_id,
                     "event_index": idx,
-                    "fingerprint": formatted_event.fingerprint
-                    if hasattr(formatted_event, "fingerprint")
-                    else None,
+                    "fingerprint": (
+                        formatted_event.fingerprint
+                        if hasattr(formatted_event, "fingerprint")
+                        else None
+                    ),
                 },
             )
             try:
@@ -763,12 +1043,16 @@ def __save_to_db(
                         extra={
                             "tenant_id": tenant_id,
                             "event_index": idx,
-                            "fingerprint": formatted_event.fingerprint
-                            if hasattr(formatted_event, "fingerprint")
-                            else None,
-                            "enrichment_keys": list(alert_enrichment.enrichments.keys())
-                            if hasattr(alert_enrichment, "enrichments")
-                            else None,
+                            "fingerprint": (
+                                formatted_event.fingerprint
+                                if hasattr(formatted_event, "fingerprint")
+                                else None
+                            ),
+                            "enrichment_keys": (
+                                list(alert_enrichment.enrichments.keys())
+                                if hasattr(alert_enrichment, "enrichments")
+                                else None
+                            ),
                         },
                     )
                     for enrichment in alert_enrichment.enrichments:
@@ -783,9 +1067,11 @@ def __save_to_db(
                         extra={
                             "tenant_id": tenant_id,
                             "event_index": idx,
-                            "fingerprint": formatted_event.fingerprint
-                            if hasattr(formatted_event, "fingerprint")
-                            else None,
+                            "fingerprint": (
+                                formatted_event.fingerprint
+                                if hasattr(formatted_event, "fingerprint")
+                                else None
+                            ),
                         },
                     )
             except Exception as e:
@@ -794,9 +1080,11 @@ def __save_to_db(
                     extra={
                         "tenant_id": tenant_id,
                         "event_index": idx,
-                        "fingerprint": formatted_event.fingerprint
-                        if hasattr(formatted_event, "fingerprint")
-                        else None,
+                        "fingerprint": (
+                            formatted_event.fingerprint
+                            if hasattr(formatted_event, "fingerprint")
+                            else None
+                        ),
                         "error_type": type(e).__name__,
                         "error_message": str(e),
                     },
@@ -807,9 +1095,11 @@ def __save_to_db(
                 extra={
                     "tenant_id": tenant_id,
                     "event_index": idx,
-                    "fingerprint": formatted_event.fingerprint
-                    if hasattr(formatted_event, "fingerprint")
-                    else None,
+                    "fingerprint": (
+                        formatted_event.fingerprint
+                        if hasattr(formatted_event, "fingerprint")
+                        else None
+                    ),
                 },
             )
 
@@ -848,9 +1138,11 @@ def __save_to_db(
                         extra={
                             "alert_id": alert.id,
                             "tenant_id": tenant_id,
-                            "incidents_count": len(alert._incidents)
-                            if hasattr(alert, "_incidents")
-                            else 0,
+                            "incidents_count": (
+                                len(alert._incidents)
+                                if hasattr(alert, "_incidents")
+                                else 0
+                            ),
                         },
                     )
                     for incident in alert._incidents:
@@ -862,12 +1154,14 @@ def __save_to_db(
                                 extra={
                                     "alert_id": alert.id,
                                     "tenant_id": tenant_id,
-                                    "incident_id": incident.id
-                                    if hasattr(incident, "id")
-                                    else None,
-                                    "incident_status": incident.status
-                                    if hasattr(incident, "status")
-                                    else None,
+                                    "incident_id": (
+                                        incident.id if hasattr(incident, "id") else None
+                                    ),
+                                    "incident_status": (
+                                        incident.status
+                                        if hasattr(incident, "status")
+                                        else None
+                                    ),
                                 },
                             )
                             incident_bl.resolve_incident_if_require(incident)
@@ -935,17 +1229,19 @@ def __save_to_db(
                 "error_type": error_type,
                 "error_message": error_message,
                 "session_exists": session is not None,
-                "session_active": session.is_active
-                if session and hasattr(session, "is_active")
-                else "N/A",
-                "formatted_events_count": len(formatted_events)
-                if formatted_events
-                else 0,
-                "formatted_events_summary": _serialize_event_for_logging(
-                    formatted_events[:5]
-                )
-                if formatted_events
-                else "N/A",  # First 5 events
+                "session_active": (
+                    session.is_active
+                    if session and hasattr(session, "is_active")
+                    else "N/A"
+                ),
+                "formatted_events_count": (
+                    len(formatted_events) if formatted_events else 0
+                ),
+                "formatted_events_summary": (
+                    _serialize_event_for_logging(formatted_events[:5])
+                    if formatted_events
+                    else "N/A"
+                ),  # First 5 events
             },
         )
         raise
@@ -1038,17 +1334,17 @@ def __handle_formatted_events(
         formatted_events = list(
             filter(lambda event: not event.is_full_duplicate, formatted_events)
         )
-        
+
         # record metrics
         deduplication_duration_seconds.labels(
             provider_type=provider_type or "generic"
         ).observe(time.time() - start_dedup_time)
-        
+
         if dedup_count > 0:
             deduplication_events_total.labels(
                 provider_type=provider_type or "generic", status="duplicated"
             ).inc(dedup_count)
-        
+
         # also count non-duplicated events to know the ratio
         deduplication_events_total.labels(
             provider_type=provider_type or "generic", status="new"
@@ -1201,89 +1497,28 @@ def __handle_formatted_events(
         notification_cache = get_notification_cache()
 
         # Tell the client to poll alerts via API (since event handler runs in a separate process)
-
-        # Tell the client to poll alerts via API (since event handler runs in a separate process)
         # We don't use throttling here to ensure real-time updates (client will append instead of full refresh)
-        try:
-            api_url = os.environ.get("KEEP_API_URL", "http://localhost:8080")
-            logger.info(f"Notifying API at {api_url} to poll alerts for {tenant_id}")
-            
-            # Serialize alerts to dicts
-            alerts_payload = [alert.dict() for alert in enriched_formatted_events]
-            
-            response = requests.post(
-                f"{api_url}/sse/notify",
-                json={
-                    "tenant_id": tenant_id,
-                    "event": "poll-alerts",
-                    "data": {"alerts": alerts_payload}
-                },
-                timeout=5
-            )
-            response.raise_for_status()
-            logger.info(f"Successfully told client to poll alerts via API ({response.status_code})")
-        except Exception as e:
-            logger.warning(f"Failed to tell client to poll alerts: {e}")
-            pass
+        api_url = os.environ.get("KEEP_API_URL", "http://localhost:8080")
+        logger.info(f"Notifying API at {api_url} to poll alerts for {tenant_id}")
+
+        # Take an immutable snapshot (plain dicts) of the alerts on the
+        # processing thread, then hand it to the background pool. The pool owns
+        # the rest of the notify work (delivery + the per-preset CEL filtering
+        # loop) so none of it runs on the hot path, and the workers never touch
+        # live AlertDto / preset objects shared with the processing thread.
+        alerts_payload = [alert.dict() for alert in enriched_formatted_events]
+
+        _submit_notify(api_url, tenant_id, "poll-alerts", {"alerts": alerts_payload})
 
         if incidents and notification_cache.should_notify(tenant_id, "incident-change"):
-            try:
-                api_url = os.environ.get("KEEP_API_URL", "http://localhost:8080")
-                incident_ids = [str(inc.id) for inc in incidents]
-                response = requests.post(
-                    f"{api_url}/sse/notify",
-                    json={
-                        "tenant_id": tenant_id,
-                        "event": "incident-change",
-                        "data": {"incident_ids": incident_ids}
-                    },
-                    timeout=5
-                )
-                response.raise_for_status()
-            except Exception:
-                logger.exception("Failed to tell the client to pull incidents")
-
-        # Now we need to update the presets
-        # send with SSE
-
-        try:
-            presets = get_all_presets_dtos(tenant_id)
-            rules_engine = RulesEngine(tenant_id=tenant_id)
-            presets_do_update = []
-            for preset_dto in presets:
-                # filter the alerts based on the search query
-                filtered_alerts = rules_engine.filter_alerts(
-                    enriched_formatted_events, preset_dto.cel_query
-                )
-                # if not related alerts, no need to update
-                if not filtered_alerts:
-                    continue
-                presets_do_update.append(preset_dto)
-            if notification_cache.should_notify(tenant_id, "poll-presets"):
-                try:
-                    api_url = os.environ.get("KEEP_API_URL", "http://localhost:8080")
-                    response = requests.post(
-                        f"{api_url}/sse/notify",
-                        json={
-                            "tenant_id": tenant_id,
-                            "event": "poll-presets",
-                            "data": {"preset_names": [p.name.lower() for p in presets_do_update]},
-                        },
-                        timeout=5
-                    )
-                    response.raise_for_status()
-                except Exception:
-                    logger.exception("Failed to send presets via SSE")
-        except Exception:
-            logger.exception(
-                "Failed to send presets via SSE",
-                extra={
-                    "provider_type": provider_type,
-                    "num_of_alerts": len(formatted_events),
-                    "provider_id": provider_id,
-                    "tenant_id": tenant_id,
-                },
+            incident_ids = [str(inc.id) for inc in incidents]
+            _submit_notify(
+                api_url, tenant_id, "incident-change", {"incident_ids": incident_ids}
             )
+
+        # Offload the preset CEL filtering loop + poll-presets notify onto the
+        # pool, passing the immutable alerts snapshot.
+        _submit_preset_notify(api_url, tenant_id, alerts_payload)
     return enriched_formatted_events
 
 
@@ -1348,9 +1583,11 @@ def process_event(
                     "Database session created successfully",
                     extra={
                         **extra_dict,
-                        "session_active": session.is_active
-                        if hasattr(session, "is_active")
-                        else "unknown",
+                        "session_active": (
+                            session.is_active
+                            if hasattr(session, "is_active")
+                            else "unknown"
+                        ),
                     },
                 )
             except Exception as e:
@@ -1555,9 +1792,9 @@ def process_event(
                         },
                     )
                     try:
-                        is_internal_keep_event = (
-                            isinstance(event, dict) and 
-                            (event.get("source") == ["keep"] or event.get("provider_type") == "keep")
+                        is_internal_keep_event = isinstance(event, dict) and (
+                            event.get("source") == ["keep"]
+                            or event.get("provider_type") == "keep"
                         )
                         if provider_class and not is_internal_keep_event:
                             event = provider_class.format_alert(
@@ -1625,20 +1862,27 @@ def process_event(
                     "Converting dict event to AlertDto",
                     extra={
                         **extra_dict,
-                        "event_keys": list(event.keys())
-                        if isinstance(event, dict)
-                        else None,
+                        "event_keys": (
+                            list(event.keys()) if isinstance(event, dict) else None
+                        ),
                     },
                 )
                 if not event.get("name"):
                     # For internal keep events, try to inherit the name from the last alert
                     # this prevents using UUID as name and generating duplicate alerts
-                    if provider_type == "keep" or event.get("provider_type") == "keep" or is_internal_keep_event:
+                    if (
+                        provider_type == "keep"
+                        or event.get("provider_type") == "keep"
+                        or is_internal_keep_event
+                    ):
                         from src.common.core.db.db import get_last_alert_by_fingerprint
                         from src.common.models.db.alert import Alert
+
                         # Try to get fingerprint from event or extra_dict
                         fp = fingerprint or event.get("fingerprint")
-                        last_alert = get_last_alert_by_fingerprint(tenant_id, fp, session=session)
+                        last_alert = get_last_alert_by_fingerprint(
+                            tenant_id, fp, session=session
+                        )
                         if last_alert:
                             previous_alert = session.get(Alert, last_alert.alert_id)
                             if previous_alert and previous_alert.name:
@@ -1649,7 +1893,9 @@ def process_event(
                             event["name"] = event.get("id", "unknown alert name")
                     else:
                         event["name"] = event.get("id", "unknown alert name")
-                if fingerprint and (is_internal_keep_event or "fingerprint" not in event):
+                if fingerprint and (
+                    is_internal_keep_event or "fingerprint" not in event
+                ):
                     event["fingerprint"] = fingerprint
                 event = [AlertDto(**event)]
                 raw_event = [raw_event]
@@ -1667,9 +1913,9 @@ def process_event(
                     "Converting single AlertDto to list",
                     extra={
                         **extra_dict,
-                        "alert_fingerprint": event.fingerprint
-                        if hasattr(event, "fingerprint")
-                        else None,
+                        "alert_fingerprint": (
+                            event.fingerprint if hasattr(event, "fingerprint") else None
+                        ),
                     },
                 )
                 event = [event]
@@ -1718,9 +1964,9 @@ def process_event(
                 "__handle_formatted_events completed",
                 extra={
                     **extra_dict,
-                    "formatted_events_count": len(formatted_events)
-                    if formatted_events
-                    else 0,
+                    "formatted_events_count": (
+                        len(formatted_events) if formatted_events else 0
+                    ),
                 },
             )
 
@@ -1729,9 +1975,9 @@ def process_event(
                 extra={
                     **extra_dict,
                     "processing_time": time.time() - start_time,
-                    "formatted_events_count": len(formatted_events)
-                    if formatted_events
-                    else 0,
+                    "formatted_events_count": (
+                        len(formatted_events) if formatted_events else 0
+                    ),
                 },
             )
             events_out_counter.inc()
@@ -1779,9 +2025,11 @@ def process_event(
                 "raw_event_summary": _serialize_event_for_logging(raw_event),
                 "event_summary": _serialize_event_for_logging(event),
                 "session_exists": session is not None,
-                "session_active": session.is_active
-                if session and hasattr(session, "is_active")
-                else "N/A",
+                "session_active": (
+                    session.is_active
+                    if session and hasattr(session, "is_active")
+                    else "N/A"
+                ),
             },
         )
 
@@ -1844,9 +2092,11 @@ def process_event(
                     "Closing database session",
                     extra={
                         **extra_dict,
-                        "session_active": session.is_active
-                        if hasattr(session, "is_active")
-                        else "unknown",
+                        "session_active": (
+                            session.is_active
+                            if hasattr(session, "is_active")
+                            else "unknown"
+                        ),
                     },
                 )
                 session.close()
