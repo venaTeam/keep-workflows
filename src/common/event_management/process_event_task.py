@@ -24,6 +24,7 @@ from src.common.bl.enrichments_bl import EnrichmentsBl
 from src.common.bl.incidents_bl import IncidentBl
 from src.common.bl.maintenance_windows_bl import MaintenanceWindowsBl
 from src.common.consts import KEEP_CORRELATION_ENABLED, MAINTENANCE_WINDOW_ALERT_STRATEGY
+from src.common.event_management.error_storm_guard import should_record_error
 from src.common.core.db import (
     bulk_upsert_alert_fields,
     enrich_alerts_with_incidents,
@@ -1881,6 +1882,22 @@ def __save_error_alerts(
 ):
     if not raw_events:
         logger.info("No raw events to save as errors")
+        return
+
+    # Error-storm guard: rate-limit / dedup AlertRaw(error=True) writes by
+    # (tenant_id, provider_type, bounded-error-hash) over a TTL window so a
+    # malformed-payload flood or a repeated poison message can't fill alertraw.
+    # The normal error=False raw-event path never reaches here.
+    if not should_record_error(
+        tenant_id=tenant_id,
+        provider_type=provider_type,
+        error_class="save_error_alerts",
+        error_message=error_message,
+    ):
+        logger.info(
+            "Suppressing AlertRaw error write (error-storm guard)",
+            extra={"tenant_id": tenant_id, "provider_type": provider_type},
+        )
         return
 
     try:
