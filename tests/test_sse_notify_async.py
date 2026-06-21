@@ -145,3 +145,61 @@ def test_distinct_keys_are_not_coalesced(notify_pool):
         ("t2", "poll-alerts"),
         ("t1", "poll-presets"),
     }
+
+
+def test_coalescing_merges_alert_lists_no_data_loss(notify_pool):
+    """poll-alerts payloads carry {"alerts": [...]} that the UI injects into its
+    cache WITHOUT a refetch, so coalescing must MERGE the alert lists, not drop
+    intermediate ones. While the first delivery is in flight, submit several
+    poll-alerts each carrying a distinct alert; the single collapsed delivery
+    must contain EVERY alert (de-duped by fingerprint), not just the latest."""
+    pet = notify_pool
+    delivered = []
+    release = threading.Event()
+    first_in_flight = threading.Event()
+
+    def post(url, json=None, timeout=None):
+        if not first_in_flight.is_set():
+            first_in_flight.set()
+            release.wait(timeout=5)
+        delivered.append(json["data"])
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        return resp
+
+    with patch.object(pet._sse_session, "post", side_effect=post):
+        pet._submit_notify(
+            "http://localhost:8080",
+            "t1",
+            "poll-alerts",
+            {"alerts": [{"fingerprint": "fp0"}]},
+        )
+        assert first_in_flight.wait(timeout=5)
+
+        for i in range(1, 6):
+            pet._submit_notify(
+                "http://localhost:8080",
+                "t1",
+                "poll-alerts",
+                {"alerts": [{"fingerprint": f"fp{i}"}]},
+            )
+        # A duplicate fingerprint must NOT double up (de-dup by fingerprint).
+        pet._submit_notify(
+            "http://localhost:8080",
+            "t1",
+            "poll-alerts",
+            {"alerts": [{"fingerprint": "fp3"}]},
+        )
+
+        release.set()
+        pet.shutdown_sse_pool(wait=True)
+
+    all_fps = {a["fingerprint"] for payload in delivered for a in payload["alerts"]}
+    assert all_fps == {"fp0", "fp1", "fp2", "fp3", "fp4", "fp5"}
+    merged_count = sum(
+        1
+        for payload in delivered
+        for a in payload["alerts"]
+        if a["fingerprint"] == "fp3"
+    )
+    assert merged_count == 1
