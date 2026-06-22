@@ -16,11 +16,13 @@ for creating the database and tables, while the worker processes should only be 
 import hashlib
 import logging
 import os
+import time
 
 import alembic.command
 import alembic.config
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import Session, select
+from sqlmodel import Session, SQLModel, select
 
 from src.common.core.config import config
 from src.common.core.db_utils import create_db_engine
@@ -168,22 +170,67 @@ def try_create_single_tenant(tenant_id: str, create_default_user=True) -> None:
             pass
 
 
+# Tables provisioned by keep-api-gateway's alembic migrations whose presence
+# signals the shared schema is ready. `alembic_version` proves the gateway (the
+# single schema owner) has run, `alert` is a core table this service reads.
+_SCHEMA_READY_TABLES = ("alembic_version", "alert")
+_SCHEMA_WAIT_TIMEOUT = int(os.environ.get("KEEP_SCHEMA_WAIT_TIMEOUT", "180"))
+_SCHEMA_WAIT_INTERVAL = int(os.environ.get("KEEP_SCHEMA_WAIT_INTERVAL", "2"))
+
+
+def _wait_for_schema():
+    """Block until keep-api-gateway has provisioned the shared DB schema.
+
+    keep-api-gateway is the SINGLE owner of the database schema — it is the only
+    service that ships alembic migrations (this service has none; the previous
+    `alembic upgrade head` here pointed at a non-existent alembic.ini). Building
+    or migrating the schema from this service races the gateway on an empty
+    shared DB and collides in pg_type (duplicate key (typname)=(tenant)), and
+    bypasses migration history. Wait for the gateway to finish, then run as a
+    consumer.
+    """
+    deadline = time.monotonic() + _SCHEMA_WAIT_TIMEOUT
+    while True:
+        try:
+            tables = set(sa_inspect(engine).get_table_names())
+            missing = [t for t in _SCHEMA_READY_TABLES if t not in tables]
+            if not missing:
+                logger.info("DB schema is ready (owned by keep-api-gateway)")
+                return
+            logger.info(
+                "Waiting for keep-api-gateway to provision the DB schema; "
+                "missing tables: %s",
+                missing,
+            )
+        except Exception as exc:
+            logger.warning("Waiting for the DB to become reachable: %s", exc)
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                "Timed out waiting for keep-api-gateway to provision the DB "
+                f"schema (waited {_SCHEMA_WAIT_TIMEOUT}s for {_SCHEMA_READY_TABLES})"
+            )
+        time.sleep(_SCHEMA_WAIT_INTERVAL)
+
+
 def migrate_db():
     """
-    Run migrations to make sure the DB is up-to-date.
+    Ensure the DB schema is ready before this service runs.
+
+    keep-api-gateway owns the schema on the shared server DB, so this service
+    waits for it rather than migrating it (see _wait_for_schema). On SQLite
+    (tests / standalone single-process dev) there is no shared owner and no
+    possible race, so build the tables locally.
     """
     if os.environ.get("SKIP_DB_CREATION", "false") == "true":
-        logger.info("Skipping running migrations...")
+        logger.info("Skipping DB schema init...")
         return None
 
-    logger.info("Running migrations...")
-    config_path = os.path.dirname(os.path.abspath(__file__)) + "/../../" + "alembic.ini"
-    config = alembic.config.Config(file_=config_path)
-    # Re-defined because alembic.ini uses relative paths which doesn't work
-    # when running the app as a pyhton pakage (could happen form any path)
-    config.set_main_option(
-        "script_location",
-        os.path.dirname(os.path.abspath(__file__)) + "/../models/db/migrations",
-    )
-    alembic.command.upgrade(config, "head")
-    logger.info("Finished migrations")
+    if engine.dialect.name == "sqlite":
+        logger.info("SQLite engine — creating tables locally")
+        SQLModel.metadata.create_all(engine)
+        logger.info("Finished creating tables")
+        return None
+
+    logger.info("Waiting for keep-api-gateway to provision the DB schema...")
+    _wait_for_schema()
+    logger.info("DB schema ready")
