@@ -56,6 +56,14 @@ class AlertStatus(Enum):
     MAINTENANCE = "maintenance"
 
 
+class AlertEnvironment(str, Enum):
+    PRODUCTION = "production"
+    INTEGRATION = "integration"
+    LOAD = "load"
+    DEVELOPMENT = "development"
+    TEST = "test"
+
+
 class DismissAlertRequest(BaseModel):
     alert_id: Optional[str] = None
 
@@ -102,6 +110,7 @@ class AlertDto(BaseModel):
     impact: str | None = None
     runbook_url: str | None = None
     alert_rule_url: str | None = None
+    environment: str = Field(default=AlertEnvironment.PRODUCTION.value)
 
     def __str__(self) -> str:
         # Convert the model instance to a dictionary
@@ -235,6 +244,13 @@ class AlertDto(BaseModel):
                 extra={"event": values},
             )
             values["status"] = AlertStatus.FIRING
+
+        # Check and set default environment
+        environment = values.get("environment")
+        try:
+            values["environment"] = AlertEnvironment(environment).value
+        except ValueError:
+            values["environment"] = AlertEnvironment.PRODUCTION.value
 
         # this is code duplication of enrichment_helpers.py and should be refactored
         last_received = values.get("last_received", None)
