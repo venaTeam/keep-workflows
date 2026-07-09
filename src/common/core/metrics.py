@@ -1,14 +1,22 @@
 import os
-from prometheus_client import Counter, Gauge, Histogram, Summary
 
-# This MUST be called before any prometheus_client import
-prom_multiproc_dir = os.environ.get("PROMETHEUS_MULTIPROC_DIR", "/tmp/prometheus")
-os.environ["PROMETHEUS_MULTIPROC_DIR"] = prom_multiproc_dir
+# PROMETHEUS_MULTIPROC_DIR MUST be set before prometheus_client is imported:
+# multiprocess mode is selected at import time based on this env var. (Previously
+# the import sat above this block, so under gunicorn the metrics silently fell
+# back to single-process mode and never reached the dir the /metrics endpoint
+# scrapes.) The default is workflows-specific so these files don't collide with
+# other Keep services sharing the host (e.g. the gateway's /tmp/prometheus, which
+# it wipes on startup); an explicit env value still wins via setdefault.
+prom_multiproc_dir = os.environ.setdefault(
+    "PROMETHEUS_MULTIPROC_DIR", "/tmp/prometheus_keep_workflows"
+)
 try:
     os.makedirs(prom_multiproc_dir, exist_ok=True)
 except Exception:
     # This might fail if we don't have permissions, but we shouldn't crash
     pass
+
+from prometheus_client import Counter, Gauge, Histogram, Summary  # noqa: E402
 
 
 def init_metrics():

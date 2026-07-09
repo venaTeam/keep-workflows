@@ -236,9 +236,9 @@ class WorkflowScheduler:
                 error_type=type(e).__name__,
             ).inc()
 
-            workflow_execution_status.labels(
-                tenant_id=tenant_id, workflow_id=workflow_id, status="error"
-            ).inc()
+            # Note: the by-status counter (workflow_execution_status) is
+            # incremented once in _finish_workflow_execution below, so it is not
+            # incremented here to avoid double counting.
 
             self.logger.exception(
                 f"Failed to run workflow {workflow.workflow_id}...",
@@ -715,6 +715,21 @@ class WorkflowScheduler:
         status: WorkflowStatus,
         error=None,
     ):
+        # Product BI: count every finished execution by terminal status. This is
+        # the single chokepoint all execution paths funnel through, so it is the
+        # one place the status counter is incremented (exactly once per run).
+        # Instrumentation must never break the execution path.
+        try:
+            workflow_execution_status.labels(
+                tenant_id=tenant_id,
+                workflow_id=workflow_id,
+                status=status.value,
+            ).inc()
+        except Exception:
+            self.logger.debug(
+                "Failed to record workflow_execution_status", exc_info=True
+            )
+
         # mark the workflow execution as finished in the db
         finish_workflow_execution_db(
             tenant_id=tenant_id,

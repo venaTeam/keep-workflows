@@ -5,9 +5,13 @@ import uvicorn
 from contextlib import asynccontextmanager
 
 from dotenv import find_dotenv, load_dotenv
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
+
+# Importing the metrics module sets PROMETHEUS_MULTIPROC_DIR and registers the
+# keep_workflows_* metrics (including the execution counters scraped below).
+import src.common.core.metrics  # noqa: F401
 
 load_dotenv(find_dotenv())
 
@@ -130,6 +134,27 @@ def get_app() -> FastAPI:
     from src.routes.healthcheck import router as healthcheck_router
 
     app.include_router(healthcheck_router, prefix="/healthcheck", tags=["healthcheck"])
+
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics():
+        """Prometheus scrape endpoint (multiprocess-aware)."""
+        from prometheus_client import (
+            CONTENT_TYPE_LATEST,
+            REGISTRY,
+            CollectorRegistry,
+            generate_latest,
+        )
+
+        if os.environ.get("PROMETHEUS_MULTIPROC_DIR"):
+            from prometheus_client import multiprocess
+
+            registry = CollectorRegistry()
+            multiprocess.MultiProcessCollector(registry)
+        else:
+            registry = REGISTRY
+        return Response(
+            content=generate_latest(registry), media_type=CONTENT_TYPE_LATEST
+        )
 
     @app.get("/", include_in_schema=False)
     async def root():
