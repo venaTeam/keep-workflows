@@ -400,7 +400,11 @@ class AlertAudit(SQLModel, table=True):
     description: str = Field(sa_column=Column(TEXT))
 
     mentions: list["CommentMention"] = Relationship(
-        back_populates="alert_audit", sa_relationship_kwargs={"lazy": "selectin"}
+        back_populates="alert_audit",
+        sa_relationship_kwargs={
+            "lazy": "selectin",
+            "primaryjoin": "foreign(CommentMention.comment_id) == AlertAudit.id",
+        },
     )
 
     __table_args__ = (
@@ -419,7 +423,6 @@ class CommentMention(SQLModel, table=True):
     comment_id: UUID = Field(
         sa_column=Column(
             UUIDType(binary=False),
-            ForeignKey("alertaudit.id", ondelete="CASCADE"),
             nullable=False,
         )
     )
@@ -428,7 +431,11 @@ class CommentMention(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow, nullable=False)
 
     alert_audit: AlertAudit = Relationship(
-        back_populates="mentions", sa_relationship_kwargs={"lazy": "selectin"}
+        back_populates="mentions",
+        sa_relationship_kwargs={
+            "lazy": "selectin",
+            "primaryjoin": "foreign(CommentMention.comment_id) == AlertAudit.id",
+        },
     )
 
     __table_args__ = (
