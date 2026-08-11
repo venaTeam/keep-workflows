@@ -13,7 +13,7 @@ from src.common.core.db import (
     get_tenant_role_for_subjects,
     get_tenants_for_subjects,
 )
-from src.common.core.dependencies import SINGLE_TENANT_UUID
+from src.common.core.dependencies import GENERIC_TENANT_UUID
 from src.identitymanager.authenticatedentity import AuthenticatedEntity
 from src.identitymanager.authverifierbase import AuthVerifierBase
 from src.identitymanager.rbac import Roles
@@ -373,7 +373,7 @@ class KeycloakAuthVerifier(AuthVerifierBase):
             elif self._is_superadmin(email, groups):
                 role = "superadmin"
                 if not tenant_id:
-                    tenant_id = SINGLE_TENANT_UUID
+                    tenant_id = GENERIC_TENANT_UUID
             else:
                 # No org group: prefer the Keep grant store (roles assigned in the
                 # Edit Tenant UI -- admin / editor / viewer). Land the user in their
@@ -396,7 +396,7 @@ class KeycloakAuthVerifier(AuthVerifierBase):
                 else:
                     # not part of any tenant -> generic/GENERAL context
                     if not tenant_id:
-                        tenant_id = SINGLE_TENANT_UUID
+                        tenant_id = GENERIC_TENANT_UUID
                     roles = (
                         payload.get("resource_access", {})
                         .get(self.keycloak_client_id, {})
@@ -434,7 +434,7 @@ class KeycloakAuthVerifier(AuthVerifierBase):
 
         # Fallback to generic tenant ID if not present in token
         if not tenant_id:
-            tenant_id = SINGLE_TENANT_UUID
+            tenant_id = GENERIC_TENANT_UUID
 
         # finally, check if the role is in the allowed roles
         authenticated_entity = AuthenticatedEntity(
