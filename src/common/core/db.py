@@ -6363,7 +6363,7 @@ def recover_prev_alert_status(alert: Alert, session: Optional[Session] = None):
         session.commit()
 
 
-# --- Per-tenant role grants (VENA-5596) --------------------------------------
+# --- Per-tenant role grants --------------------------------------
 # The tenant_role_grant table is owned (schema/migration) by keep-api-gateway;
 # workflows only READS it here to resolve a user's tenant/role at request time.
 

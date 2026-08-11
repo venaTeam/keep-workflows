@@ -61,14 +61,13 @@ class Noc(Role):
     DESCRIPTION = "read permissions and assign itself to alert"
 
 
-# Viewer is read-only within the tenants it has access to (VENA-5596 §3.5).
+# Viewer is read-only within the tenants it has access to.
 class Viewer(Role):
     SCOPES = ["read:*"]
     DESCRIPTION = "read-only within a tenant"
 
 
-# Editor operates fully within a tenant, minus tenant permission management
-# (VENA-5596 §3.5).
+# Editor operates fully within a tenant, minus permission management.
 class Editor(Role):
     SCOPES = ["read:*", "write:*", "delete:*", "update:*", "execute:*"]
     DESCRIPTION = "full operate within a tenant, minus permission management"
@@ -80,7 +79,7 @@ class Admin(Role):
     DESCRIPTION = "do everything"
 
 
-# Superadmin is a global admin across all tenants (VENA-5596 §3.5 / §3.7).
+# Superadmin is a global admin across all tenants.
 class SuperAdmin(Role):
     SCOPES = [
         "read:*",

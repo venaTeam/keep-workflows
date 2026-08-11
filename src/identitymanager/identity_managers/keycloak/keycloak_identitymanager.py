@@ -8,13 +8,7 @@ from src.identitymanager.identitymanager import BaseIdentityManager
 
 
 class KeycloakIdentityManager(BaseIdentityManager):
-    """Minimal Keycloak identity manager for keep-workflows (VENA-5596).
-
-    Request authentication/authorization is handled entirely by
-    KeycloakAuthVerifier. Workflows does not manage Keycloak users/groups or
-    register UMA resources (that lives in keep-api-gateway), so on_start is a
-    no-op and the user-management methods are inert.
-    """
+    """Minimal manager -- auth is handled by KeycloakAuthVerifier; on_start is a no-op."""
 
     def __init__(self, tenant_id, context_manager: ContextManager, **kwargs):
         super().__init__(tenant_id, context_manager, **kwargs)

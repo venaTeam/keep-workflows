@@ -13,7 +13,7 @@ from src.common.core.db import (
     get_tenant_role_for_subjects,
     get_tenants_for_subjects,
 )
-from src.common.core.dependencies import GENERIC_TENANT_UUID
+from src.common.core.dependencies import SINGLE_TENANT_UUID
 from src.identitymanager.authenticatedentity import AuthenticatedEntity
 from src.identitymanager.authverifierbase import AuthVerifierBase
 from src.identitymanager.rbac import Roles
@@ -116,7 +116,7 @@ class KeycloakAuthVerifier(AuthVerifierBase):
             self.keycloak_multi_org = False
 
         self.groups_separator = os.environ.get("KEYCLOAK_GROUPS_SEPERATOR", "-").lower()
-        # VENA-5596 superadmin allowlist. A user is a global superadmin if their
+        # superadmin allowlist. A user is a global superadmin if their
         # email is in KEEP_SUPERADMIN_USERS or any of their token group paths is
         # in KEEP_SUPERADMIN_GROUPS (both comma-separated, matched case-insensitively).
         self.superadmin_users = {
@@ -161,7 +161,7 @@ class KeycloakAuthVerifier(AuthVerifierBase):
         # Returns the Keycloak-group org name for a tenant, or None when the
         # tenant is not group-backed (e.g. a tenant created in the Keep UI).
         # Callers MUST tolerate None -- raising here 401s tenant switching into
-        # any Keep-created tenant (VENA-5596).
+        # any Keep-created tenant.
         for org_name, org_tenant_id in self.tenants.items():
             if org_tenant_id.get("tenant_id") == tenant_id:
                 return org_name
@@ -209,7 +209,7 @@ class KeycloakAuthVerifier(AuthVerifierBase):
         return org_name
 
     def _is_superadmin(self, email, user_groups) -> bool:
-        # Global superadmin (VENA-5596): email allowlisted, or a member of a
+        # Global superadmin: email allowlisted, or a member of a
         # superadmin group. Independent of any org/tenant.
         if email and email.lower() in self.superadmin_users:
             return True
@@ -221,7 +221,7 @@ class KeycloakAuthVerifier(AuthVerifierBase):
 
     def _grant_subjects(self, email, user_email, user_groups) -> list[str]:
         # Identifiers to match against tenant_role_grant.subject: the username
-        # (preferred_username), the email, and the group paths (VENA-5596).
+        # (preferred_username), the email, and the group paths.
         subjects = [s for s in (email, user_email) if s]
         subjects.extend(user_groups or [])
         return subjects
@@ -323,7 +323,7 @@ class KeycloakAuthVerifier(AuthVerifierBase):
                 role = self._get_role_in_org(groups, org_name)
                 # Fall back to the Keep grant store: roles assigned in the Edit
                 # Tenant UI live in tenant_role_grant, not Keycloak groups
-                # (VENA-5596).
+                #.
                 if not role:
                     role = get_tenant_role_for_subjects(
                         active_tenant,
@@ -368,18 +368,17 @@ class KeycloakAuthVerifier(AuthVerifierBase):
                         status_code=401,
                         detail="Invalid Keycloak token - no role in groups",
                     )
-            # no org group at all -- valid only for a global superadmin
-            # (VENA-5596). Fall back to the default tenant as their active context
-            # (AuthenticatedEntity.tenant_id is required); they can switch tenants.
+            # no org group at all -- valid only for a global superadmin; fall back
+            # to the default tenant as their active context (they can switch).
             elif self._is_superadmin(email, groups):
                 role = "superadmin"
                 if not tenant_id:
-                    tenant_id = GENERIC_TENANT_UUID
+                    tenant_id = SINGLE_TENANT_UUID
             else:
                 # No org group: prefer the Keep grant store (roles assigned in the
                 # Edit Tenant UI -- admin / editor / viewer). Land the user in their
                 # granted tenant with that role. Only users with NO grant fall back
-                # to the generic/GENERAL tenant context (VENA-5596).
+                # to the generic/GENERAL tenant context.
                 subjects = self._grant_subjects(
                     email, payload.get("email"), groups
                 )
@@ -397,7 +396,7 @@ class KeycloakAuthVerifier(AuthVerifierBase):
                 else:
                     # not part of any tenant -> generic/GENERAL context
                     if not tenant_id:
-                        tenant_id = GENERIC_TENANT_UUID
+                        tenant_id = SINGLE_TENANT_UUID
                     roles = (
                         payload.get("resource_access", {})
                         .get(self.keycloak_client_id, {})
@@ -424,10 +423,10 @@ class KeycloakAuthVerifier(AuthVerifierBase):
             role = role[0]
 
         # Expose the raw Keycloak group paths so per-tenant authorization can
-        # match them against tenant_role_grant.subject (VENA-5596).
+        # match them against tenant_role_grant.subject.
         entity_groups = payload.get(self.groups_claims, [])
 
-        # Global superadmin overrides any org-derived role (VENA-5596). A
+        # Global superadmin overrides any org-derived role. A
         # superadmin in an org group keeps that tenant as their active context
         # but gets the superadmin role everywhere.
         if self._is_superadmin(email, entity_groups):
@@ -435,7 +434,7 @@ class KeycloakAuthVerifier(AuthVerifierBase):
 
         # Fallback to generic tenant ID if not present in token
         if not tenant_id:
-            tenant_id = GENERIC_TENANT_UUID
+            tenant_id = SINGLE_TENANT_UUID
 
         # finally, check if the role is in the allowed roles
         authenticated_entity = AuthenticatedEntity(
@@ -453,7 +452,7 @@ class KeycloakAuthVerifier(AuthVerifierBase):
         authenticated_entity.groups = entity_groups
         # Also expose the email claim (entity.email is preferred_username). A user
         # grant may be keyed by either the username or the email, so per-tenant
-        # authorization matches on both (VENA-5596).
+        # authorization matches on both.
         authenticated_entity.user_email = payload.get("email")
 
         return authenticated_entity
@@ -462,7 +461,7 @@ class KeycloakAuthVerifier(AuthVerifierBase):
         # Multi-org (roles-from-groups) does not use Keycloak UMA; enforce the
         # role-based scopes instead so the role model is honored: viewer =
         # read-only, editor/admin = write, superadmin = everything. This replaces
-        # the previous blanket bypass that let every user pass. (VENA-5596)
+        # the previous blanket bypass that let every user pass.
         if self.keycloak_multi_org:
             return super()._authorize(authenticated_entity)
 
