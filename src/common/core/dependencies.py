@@ -9,6 +9,9 @@ logger = logging.getLogger(__name__)
 # Just a fake random tenant id
 SINGLE_TENANT_UUID = "keep"
 SINGLE_TENANT_EMAIL = "admin@keephq"
+# The generic/GENERAL tenant -- alias of the single-tenant id. Users with no
+# tenant grant (and unmatched alerts) resolve here (VENA-5596).
+GENERIC_TENANT_UUID = SINGLE_TENANT_UUID
 
 
 async def extract_generic_body(request: Request) -> dict | bytes | FormData:
