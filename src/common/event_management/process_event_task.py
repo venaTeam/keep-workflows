@@ -743,7 +743,9 @@ def __save_to_db(
                 )
                 if last_alert:
                     # Fetch the actual previous Alert object to inherit fields from
-                    previous_alert = session.get(Alert, last_alert.alert_id)
+                    previous_alert = session.exec(
+                        select(Alert).where(Alert.id == last_alert.alert_id)
+                    ).first()
                     if previous_alert:
                         # Inherit core columns
                         for field in Alert.__fields__:
@@ -1936,7 +1938,9 @@ def process_event(
                             tenant_id, fp, session=session
                         )
                         if last_alert:
-                            previous_alert = session.get(Alert, last_alert.alert_id)
+                            previous_alert = session.exec(
+                                select(Alert).where(Alert.id == last_alert.alert_id)
+                            ).first()
                             if previous_alert and previous_alert.name:
                                 event["name"] = previous_alert.name
                             else:
