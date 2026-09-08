@@ -278,3 +278,24 @@ async def test_watcher_loop_survives_tick_errors(monkeypatch):
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+
+
+def test_recovered_alerts_notify_only_about_incidents():
+    """Recovering alerts from an expired window tells the client about incident
+    changes and nothing else: presets are not evaluated per alert and no
+    poll-presets event is sent, since no client reacts to it."""
+    from src.common.bl import maintenance_windows_bl
+
+    sent = []
+    cache = MagicMock()
+    cache.should_notify.return_value = True
+    incident = MagicMock()
+    incident.id = "i1"
+    with patch(
+        "src.common.bl.maintenance_windows_bl.notify_sse",
+        side_effect=lambda tenant, event, data: sent.append((event, data)),
+    ):
+        maintenance_windows_bl._notify_recovered("t1", [incident], cache, MagicMock())
+        maintenance_windows_bl._notify_recovered("t1", [], cache, MagicMock())
+
+    assert sent == [("incident-change", {"incident_ids": ["i1"]})]

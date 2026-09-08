@@ -203,3 +203,26 @@ def test_coalescing_merges_alert_lists_no_data_loss(notify_pool):
         if a["fingerprint"] == "fp3"
     )
     assert merged_count == 1
+
+
+def test_notify_client_submits_only_poll_alerts_and_incident_change():
+    """A processed batch notifies `poll-alerts`, plus `incident-change` when incidents
+    were touched, and nothing else: no preset filtering is queued and no other
+    event is sent, because the UI only reacts to those two."""
+    captured = []
+    pool = MagicMock()
+    cache = MagicMock()
+    cache.should_notify.return_value = True
+    incident = MagicMock()
+    incident.id = "i1"
+    with patch.object(pet, "_submit_notify", side_effect=lambda *a: captured.append(a)), \
+        patch.object(pet, "_sse_pool", pool):
+        pet._notify_client(
+            "http://localhost:8080", "t1", [{"fingerprint": "fp0"}], [incident], cache
+        )
+
+    assert [(event, data) for _, _, event, data in captured] == [
+        ("poll-alerts", {"alerts": [{"fingerprint": "fp0"}]}),
+        ("incident-change", {"incident_ids": ["i1"]}),
+    ]
+    pool.submit.assert_not_called()
