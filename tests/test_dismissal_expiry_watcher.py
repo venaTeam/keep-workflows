@@ -150,6 +150,7 @@ def test_expiry_notifies_ui_via_gateway_sse_bridge(db_session, monkeypatch):
             "event": "poll-alerts",
             "data": {},
         },
+        headers={},
         timeout=5,
     )
 
@@ -299,3 +300,24 @@ def test_recovered_alerts_notify_only_about_incidents():
         maintenance_windows_bl._notify_recovered("t1", [], cache, MagicMock())
 
     assert sent == [("incident-change", {"incident_ids": ["i1"]})]
+
+
+def test_expiry_notification_sends_the_configured_token_header(db_session, monkeypatch):
+    """The gateway's notify route can require a shared token; the watcher's
+    notification must carry the configured header."""
+    past = datetime.datetime.utcnow() - datetime.timedelta(hours=1)
+    _insert_dismissed_alert(db_session, past)
+    monkeypatch.setattr(
+        "src.common.bl.dismissal_expiry_bl.SSE_NOTIFY_HEADERS",
+        {"X-Keep-Notify-Token": "s3cret"},
+        raising=False,
+    )
+
+    with patch("src.common.bl.dismissal_expiry_bl.ElasticClient"), patch(
+        "src.common.bl.dismissal_expiry_bl.requests"
+    ) as requests_mock:
+        DismissalExpiryBl.check_dismissal_expiry(logger, session=db_session)
+
+    assert requests_mock.post.call_args.kwargs["headers"] == {
+        "X-Keep-Notify-Token": "s3cret"
+    }

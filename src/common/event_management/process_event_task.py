@@ -33,6 +33,7 @@ from src.common.consts import (
     SSE_NOTIFY_WORKERS,
     SSE_NOTIFY_MAX_PENDING,
     SSE_NOTIFY_COALESCE_ENABLED,
+    SSE_NOTIFY_HEADERS,
 )
 from src.common.event_management.error_storm_guard import should_record_error
 from src.common.core.db import (
@@ -141,6 +142,7 @@ def _notify_api(api_url, tenant_id, event, data):
         resp = _sse_session.post(
             f"{api_url}/sse/notify",
             json={"tenant_id": tenant_id, "event": event, "data": data},
+            headers=SSE_NOTIFY_HEADERS,
             timeout=5,
         )
         resp.raise_for_status()

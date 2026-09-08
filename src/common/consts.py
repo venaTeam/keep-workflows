@@ -73,6 +73,10 @@ SSE_NOTIFY_MAX_PENDING = int(os.environ.get("SSE_NOTIFY_MAX_PENDING", 1000))
 SSE_NOTIFY_COALESCE_ENABLED = (
     os.environ.get("SSE_NOTIFY_COALESCE_ENABLED", "true") == "true"
 )
+SSE_NOTIFY_TOKEN = os.environ.get("SSE_NOTIFY_TOKEN")
+SSE_NOTIFY_HEADERS = (
+    {"X-Keep-Notify-Token": SSE_NOTIFY_TOKEN} if SSE_NOTIFY_TOKEN else {}
+)
 
 # Error-storm guard for AlertRaw(error=True) writes.
 # TTL dup-suppression window in seconds.
