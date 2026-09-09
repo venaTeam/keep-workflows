@@ -16,6 +16,7 @@ from typing import List, Optional
 import requests
 from sqlmodel import Session, select
 
+from src.common.consts import SSE_NOTIFY_HEADERS
 from src.common.core.db import get_session_sync
 from src.common.core.elastic import ElasticClient
 from src.common.models.action_type import ActionType
@@ -217,6 +218,7 @@ class DismissalExpiryBl:
                             "event": "poll-alerts",
                             "data": {},
                         },
+                        headers=SSE_NOTIFY_HEADERS,
                         timeout=5,
                     )
                     response.raise_for_status()

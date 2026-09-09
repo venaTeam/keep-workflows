@@ -2,32 +2,12 @@ import os
 
 from dotenv import find_dotenv, load_dotenv
 
-from src.common.models.db.preset import PresetDto, StaticPresetsId
 
 load_dotenv(find_dotenv())
 RUNNING_IN_CLOUD_RUN = os.environ.get("K_SERVICE") is not None
 PROVIDER_PULL_INTERVAL_MINUTE = int(
     os.environ.get("KEEP_PULL_INTERVAL", 10080)
 )  # maximum once a week
-STATIC_PRESETS = {
-    "feed": PresetDto(
-        id=StaticPresetsId.FEED_PRESET_ID.value,
-        name="feed",
-        options=[
-            {"label": "CEL", "value": ""},
-            {
-                "label": "SQL",
-                "value": {"sql": "", "params": {}},
-            },
-        ],
-        created_by=None,
-        is_private=False,
-        is_noisy=False,
-        should_do_noise_now=False,
-        static=True,
-        tags=[],
-    )
-}
 MAINTENANCE_WINDOW_ALERT_STRATEGY = os.environ.get(
     "MAINTENANCE_WINDOW_STRATEGY", "default"
 )  # recover_previous_status or default
@@ -72,6 +52,10 @@ SSE_NOTIFY_MAX_PENDING = int(os.environ.get("SSE_NOTIFY_MAX_PENDING", 1000))
 # Coalesce duplicate (tenant_id, event) notify signals while pending.
 SSE_NOTIFY_COALESCE_ENABLED = (
     os.environ.get("SSE_NOTIFY_COALESCE_ENABLED", "true") == "true"
+)
+SSE_NOTIFY_TOKEN = os.environ.get("SSE_NOTIFY_TOKEN")
+SSE_NOTIFY_HEADERS = (
+    {"X-Keep-Notify-Token": SSE_NOTIFY_TOKEN} if SSE_NOTIFY_TOKEN else {}
 )
 
 # Error-storm guard for AlertRaw(error=True) writes.

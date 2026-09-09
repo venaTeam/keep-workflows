@@ -50,7 +50,6 @@ from sqlalchemy.sql import exists, expression
 from sqlalchemy.sql.functions import count
 from sqlmodel import Session, SQLModel, col, or_, select, text
 
-from src.common.consts import STATIC_PRESETS
 from src.common.core.config import config
 from src.common.core.db_utils import (
     create_db_engine,
@@ -3717,22 +3716,6 @@ def get_db_preset_by_name(tenant_id: str, preset_name: str) -> Preset | None:
             .where(Preset.name == preset_name)
         ).first()
     return preset
-
-
-def get_db_presets(tenant_id: str) -> List[Preset]:
-    with Session(engine) as session:
-        presets = (
-            session.exec(select(Preset).where(Preset.tenant_id == tenant_id))
-            .unique()
-            .all()
-        )
-    return presets
-
-
-def get_all_presets_dtos(tenant_id: str) -> List[PresetDto]:
-    presets = get_db_presets(tenant_id)
-    static_presets_dtos = list(STATIC_PRESETS.values())
-    return [PresetDto(**preset.to_dict()) for preset in presets] + static_presets_dtos
 
 
 def get_dashboards(tenant_id: str, email=None) -> List[Dict[str, Any]]:
