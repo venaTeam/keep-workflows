@@ -68,7 +68,25 @@ def test_enrichment_columns_match_model():
     assert LASTALERT_ENRICHMENT_COLUMNS == {
         "status", "status_disposable", "dismiss_mode", "dismissed_until", "assignee",
         "note", "deleted", "ticket_type", "ticket_url", "ticket_provider_id",
+        "automation_matched", "grace_seconds",
     }
+
+
+@pytest.mark.parametrize("matched, grace", [(False, None), (True, 120)])
+def test_automation_coverage_native_readback(db_session, matched, grace):
+    from src.common.utils.enrichment_helpers import convert_db_alerts_to_dto_alerts
+
+    alert, row = _make_alert(db_session, "coverage")
+    row.automation_matched = matched
+    row.grace_seconds = grace
+    db_session.add(row)
+    db_session.commit()
+    view = get_enrichment_with_session(db_session, SINGLE_TENANT_UUID, "coverage")
+    assert view.enrichments["automation_matched"] is matched
+    assert view.enrichments.get("grace_seconds") == grace
+    dto = convert_db_alerts_to_dto_alerts([alert], session=db_session)[0]
+    assert dto.dict()["automation_matched"] is matched
+    assert dto.dict().get("grace_seconds") == grace
 
 
 def test_tracking_columns_match_model():
