@@ -29,6 +29,7 @@ from sqlalchemy import (
     and_,
     case,
     cast,
+    delete,
     desc,
     func,
     literal,
@@ -73,6 +74,7 @@ from src.common.models.db.alert import *  # pylint: disable=unused-wildcard-impo
 from src.common.models.db.dashboard import *  # pylint: disable=unused-wildcard-import
 from src.common.models.db.enrichment_event import *  # pylint: disable=unused-wildcard-import
 from src.common.models.db.extraction import *  # pylint: disable=unused-wildcard-import
+from src.common.models.db.helpers import DismissMode
 from src.common.models.db.incident import *  # pylint: disable=unused-wildcard-import
 from src.common.models.db.maintenance_window import *  # pylint: disable=unused-wildcard-import
 from src.common.models.db.mapping import *  # pylint: disable=unused-wildcard-import
@@ -1323,6 +1325,17 @@ class _LastAlertEnrichmentView:
             # never surfaced on the read view / DTO.
             if key == "status_disposable":
                 continue
+            if key == "status":
+                # Derived, not copied: a live dismissal reads as suppressed, and once it
+                # lapses the stored override (or None) takes over again.
+                effective_status = (
+                    last_alert.get_effective_status()
+                    if hasattr(last_alert, "get_effective_status")
+                    else last_alert.status
+                )
+                if effective_status is not None:
+                    data["status"] = effective_status
+                continue
             value = getattr(last_alert, key, None)
             if value is not None:
                 # dismissed_until is a TIMESTAMPTZ column; coerce to the legacy
@@ -1343,7 +1356,16 @@ class _LastAlertEnrichmentView:
 def _translate_dismissed(enrichments: dict) -> dict:
     """
     Translate legacy `dismissed` (bool) / `dismiss_until` keys into the typed
-    columns (`status`, `dismiss_mode`, `dismissed_until`). Returns a new dict.
+    columns (`dismiss_mode`, `dismissed_until`). Returns a new dict.
+
+    DISMISS NO LONGER WRITES `status`. It used to set status='suppressed', which
+    made suppression a stored fact — and since nothing sweeps the table, a
+    `dismiss_until` alert stayed suppressed forever once its deadline passed.
+    Suppression is now derived from dismiss_mode/dismissed_until on read
+    (`LastAlert.get_effective_status`), so `status` is left holding the override
+    the alert reverts to when the dismissal lapses. An explicit `status` in the
+    same payload is still honoured — it is a status change that happens to travel
+    with a dismissal, not part of the dismissal.
     """
     result = dict(enrichments)
     if "dismissed" in result:
@@ -1357,39 +1379,26 @@ def _translate_dismissed(enrichments: dict) -> dict:
         if ts is None:
             ts = result.pop("dismiss_until", None)
         if dismissed:
-            # An explicit caller status wins over the implied 'suppressed'
-            # (mirrors the setdefault semantics used on the undismiss branch).
-            result.setdefault("status", "suppressed")
             if ts:
-                result["dismiss_mode"] = "dismiss_until"
+                result["dismiss_mode"] = DismissMode.DISMISS_UNTIL.value
                 result["dismissed_until"] = ts
             else:
-                result.setdefault("dismiss_mode", "permanent")
+                result.setdefault("dismiss_mode", DismissMode.PERMANENT.value)
         else:
-            # Undismiss: clear dismiss state; revert status to provider value
-            # UNLESS the caller supplied an explicit status (e.g. change-status
-            # modal moving suppressed -> acknowledged). Mirrors keep-api-gateway
-            # commit f1b181c.
-            result.setdefault("status", None)
+            # Undismiss: clear the dismiss state. The status override is left
+            # alone — clearing the dismissal is what un-suppresses the alert.
             result["dismiss_mode"] = None
             result["dismissed_until"] = None
     elif "dismiss_until" in result:
-        # dismiss_until without explicit dismissed flag → dismiss_until mode
-        dismiss_until = result.pop("dismiss_until")
-        if dismiss_until:
-            result.setdefault("status", "suppressed")
-            result["dismiss_mode"] = "dismiss_until"
-            result["dismissed_until"] = dismiss_until
-    elif "dismiss_mode" in result:
-        # Direct dismiss_mode write (new UI / non-legacy callers). Couple the
-        # status to the dismiss state so a dismiss suppresses the alert and an
-        # un-dismiss reverts it, matching the legacy `dismissed` translation
-        # above. An explicit caller-supplied status always wins (setdefault).
-        if result.get("dismiss_mode"):
-            result.setdefault("status", "suppressed")
-        else:
-            result.setdefault("status", None)
-            result.setdefault("dismissed_until", None)
+        # dismiss_until without explicit dismissed flag -> dismiss_until mode
+        ts = result.pop("dismiss_until")
+        if ts:
+            result["dismiss_mode"] = DismissMode.DISMISS_UNTIL.value
+            result["dismissed_until"] = ts
+    elif "dismiss_mode" in result and not result.get("dismiss_mode"):
+        # Clearing dismiss_mode directly also clears the deadline, so a stale
+        # timestamp can't outlive the dismissal it belonged to.
+        result.setdefault("dismissed_until", None)
     return result
 
 
@@ -2730,7 +2739,6 @@ def get_incident_for_grouping_rule(
         if incident and incident.status in [
             IncidentStatus.RESOLVED.value,
             IncidentStatus.MERGED.value,
-            IncidentStatus.DELETED.value,
         ]:
             is_incident_expired = True
         elif incident and incident.alerts_count > 0:
@@ -3950,7 +3958,6 @@ def is_alert_assigned_to_incident(
             .where(LastAlertToIncident.incident_id == incident_id)
             .where(LastAlertToIncident.tenant_id == tenant_id)
             .where(LastAlertToIncident.deleted_at == NULL_FOR_DELETED_AT)
-            .where(Incident.status != IncidentStatus.DELETED.value)
         ).first()
     return assigned is not None
 
@@ -4509,27 +4516,100 @@ def get_incident_by_fingerprint(
 def delete_incident_by_id(
     tenant_id: str, incident_id: UUID, session: Optional[Session] = None
 ) -> bool:
+    """Delete an incident for real. Returns False when it did not exist.
+
+    This used to flip `status` to a `deleted` value that no query filtered on,
+    so "deleted" incidents kept showing up everywhere. Rows now go away.
+
+    What goes: the incident row, its alert links, its enrichment row, its audit
+    trail and the comment @mentions on that trail.
+
+    What stays: the alerts themselves and their LastAlert rows — they outlive the
+    incident that grouped them — along with their own audit history, which is
+    keyed on the alert fingerprint rather than the incident id.
+
+    EVERY DEPENDENT IS REMOVED EXPLICITLY, not left to ON DELETE. The FKs do
+    declare CASCADE/SET NULL, but SQLite (a supported backend) ships with
+    `PRAGMA foreign_keys` OFF, so referential actions never fire there and the
+    same delete would strand links and enrichment rows. Doing it by hand makes
+    the outcome identical on every dialect; the FK actions stay as a backstop.
+
+    Two of these have no FK to fall back on at all: `alertaudit` rows for an
+    incident are keyed by its UUID in the `fingerprint` column, and
+    `commentmention` lost its FK to `alertaudit` deliberately. Without the
+    explicit deletes below, both would survive as rows nothing can reach, since
+    every read path finds them through a live incident id.
+
+    Note this also discards the record of who did what to the incident. Deleting
+    an incident is not itself audited, so there is no "who deleted it" entry that
+    this would contradict.
+    """
     if isinstance(incident_id, str):
         incident_id = __convert_to_uuid(incident_id)
     with existed_or_new_session(session) as session:
-        incident = session.exec(
-            select(Incident).filter(
-                Incident.tenant_id == tenant_id,
-                Incident.id == incident_id,
+        audit_fingerprint = str(incident_id)
+        audit_ids = select(AlertAudit.id).where(
+            AlertAudit.tenant_id == tenant_id,
+            AlertAudit.fingerprint == audit_fingerprint,
+        )
+        # Mentions before the audit rows they point at, so the subquery can still
+        # find them.
+        session.execute(
+            delete(CommentMention).where(
+                CommentMention.tenant_id == tenant_id,
+                CommentMention.comment_id.in_(audit_ids),
             )
-        ).first()
-
+        )
+        session.execute(
+            delete(AlertAudit).where(
+                AlertAudit.tenant_id == tenant_id,
+                AlertAudit.fingerprint == audit_fingerprint,
+            )
+        )
+        session.execute(
+            delete(LastAlertToIncident).where(
+                LastAlertToIncident.tenant_id == tenant_id,
+                LastAlertToIncident.incident_id == incident_id,
+            )
+        )
+        session.execute(
+            delete(AlertToIncident).where(
+                AlertToIncident.tenant_id == tenant_id,
+                AlertToIncident.incident_id == incident_id,
+            )
+        )
+        session.execute(
+            delete(IncidentEnrichment).where(
+                IncidentEnrichment.tenant_id == tenant_id,
+                IncidentEnrichment.incident_id == incident_id,
+            )
+        )
+        # Sibling incidents point at this one; clear those references so they
+        # don't dangle (the FKs say SET NULL, which SQLite would skip).
         session.execute(
             update(Incident)
             .where(
                 Incident.tenant_id == tenant_id,
-                Incident.id == incident.id,
+                Incident.merged_into_incident_id == incident_id,
             )
-            .values({"status": IncidentStatus.DELETED.value})
+            .values(merged_into_incident_id=None)
         )
-
+        session.execute(
+            update(Incident)
+            .where(
+                Incident.tenant_id == tenant_id,
+                Incident.same_incident_in_the_past_id == incident_id,
+            )
+            .values(same_incident_in_the_past_id=None)
+        )
+        result = session.execute(
+            delete(Incident).where(
+                Incident.tenant_id == tenant_id,
+                Incident.id == incident_id,
+            )
+        )
         session.commit()
-        return True
+        return result.rowcount > 0
 
 
 def get_incidents_count(

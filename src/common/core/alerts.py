@@ -29,6 +29,10 @@ from src.common.models.db.alert import (
     LastAlert,
     LastAlertToIncident,
 )
+from src.common.models.db.helpers import (
+    DismissMode,
+    suppressed_if_dismiss_active_sql,
+)
 from src.common.models.db.facet import FacetType
 from src.common.models.db.incident import IncidentStatus
 from src.common.models.facet import FacetDto, FacetOptionDto, FacetOptionsQueryDto
@@ -126,20 +130,39 @@ _SPECIAL_FIELDS = {
     "unresolved_counter": {"data_type": DataType.INTEGER},
 }
 
+# SQL twins of `LastAlert.is_dismiss_active` / `get_effective_status`. Suppression
+# is derived from the dismiss columns so a time-boxed dismissal expires on its own
+# clock; keep these in step with the Python helpers in src/common/models/db/helpers.py.
+_SUPPRESSED_IF_DISMISS_ACTIVE_SQL = suppressed_if_dismiss_active_sql("lastalert")
+_DISMISS_ACTIVE_PREDICATE_SQL = (
+    f"lastalert.dismiss_mode = '{DismissMode.PERMANENT.value}'"
+    f" OR (lastalert.dismiss_mode = '{DismissMode.DISMISS_UNTIL.value}'"
+    " AND lastalert.dismissed_until > CURRENT_TIMESTAMP)"
+)
+
 # === strict schema (mirrors keep-api-gateway/src/repositories/alerts.py) ===
 # User-enrichment state + relocated tracking fields now live as typed columns on
 # LastAlert (no more alertenrichment JSONB extraction for ALERTS). These are
 # mapped explicitly here and EXCLUDED from the generic Alert-column loop below.
-#   - status: user override (lastalert.status) coalesced with the provider value
-#     (alert.status).
+#   - status: derived suppression, then the user override (lastalert.status),
+#     then the provider value (alert.status).
 #   - severity: immutable provider value on alert.
 #   - assignee/note/dismiss_mode/dismissed_until/deleted: typed lastalert columns.
-#   - dismissed: derived boolean (lastalert.status == 'suppressed').
+#   - dismissed: derived boolean (is the dismissal still in force).
 #   - tracking fields (last_received/firing_counter/...): relocated to lastalert.
 _STRICT_SCHEMA_FIELD_CONFIGS = [
     FieldMappingConfiguration(
         map_from_pattern="status",
-        map_to=["lastalert.status", "alert.status"],
+        # First non-NULL wins: a live dismissal reads as 'suppressed', else the
+        # user's override, else the provider's status. Suppression is derived
+        # rather than stored so a time-boxed dismissal stops matching the moment
+        # it expires, with nothing having to rewrite the row.
+        # Mirrors `LastAlert.get_effective_status`.
+        map_to=[
+            _SUPPRESSED_IF_DISMISS_ACTIVE_SQL,
+            "lastalert.status",
+            "alert.status",
+        ],
         data_type=DataType.STRING,
         enum_values=list(
             reversed([item.value for _, item in enumerate(AlertStatus)])
@@ -184,8 +207,10 @@ _STRICT_SCHEMA_FIELD_CONFIGS = [
     ),
     FieldMappingConfiguration(
         map_from_pattern="dismissed",
+        # Derived from the dismiss columns, not from a stored 'suppressed' status:
+        # an expired dismissal is no longer a dismissal.
         map_to=[
-            "CASE WHEN lastalert.status = 'suppressed' THEN 'true' ELSE 'false' END"
+            f"CASE WHEN ({_DISMISS_ACTIVE_PREDICATE_SQL}) THEN 'true' ELSE 'false' END"
         ],
         data_type=DataType.BOOLEAN,
     ),
