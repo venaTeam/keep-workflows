@@ -19,8 +19,11 @@ from fastapi import HTTPException
 
 
 class Roles(enum.Enum):
+    SUPERADMIN = "superadmin"
     ADMIN = "admin"
     NOC = "noc"
+    EDITOR = "editor"
+    VIEWER = "viewer"
     WEBHOOK = "webhook"
     WORKFLOW_RUNNER = "workflowrunner"
 
@@ -58,10 +61,35 @@ class Noc(Role):
     DESCRIPTION = "read permissions and assign itself to alert"
 
 
+# Viewer is read-only within the tenants it has access to.
+class Viewer(Role):
+    SCOPES = ["read:*"]
+    DESCRIPTION = "read-only within a tenant"
+
+
+# Editor operates fully within a tenant, minus permission management.
+class Editor(Role):
+    SCOPES = ["read:*", "write:*", "delete:*", "update:*", "execute:*"]
+    DESCRIPTION = "full operate within a tenant, minus permission management"
+
+
 # Admin has all permissions
 class Admin(Role):
     SCOPES = ["read:*", "write:*", "delete:*", "update:*", "execute:*"]
     DESCRIPTION = "do everything"
+
+
+# Superadmin is a global admin across all tenants.
+class SuperAdmin(Role):
+    SCOPES = [
+        "read:*",
+        "write:*",
+        "delete:*",
+        "update:*",
+        "execute:*",
+        "create:*",
+    ]
+    DESCRIPTION = "global admin across all tenants; can create tenants"
 
 
 # Webhook has write:alert permission to write alerts
@@ -77,10 +105,16 @@ class WorkflowRunner(Role):
 
 
 def get_role_by_role_name(role_name: str) -> list[str]:
-    if role_name == Roles.ADMIN.value:
+    if role_name == Roles.SUPERADMIN.value:
+        return SuperAdmin
+    elif role_name == Roles.ADMIN.value:
         return Admin
     elif role_name == Roles.NOC.value:
         return Noc
+    elif role_name == Roles.EDITOR.value:
+        return Editor
+    elif role_name == Roles.VIEWER.value:
+        return Viewer
     elif role_name == Roles.WEBHOOK.value:
         return Webhook
     elif role_name == Roles.WORKFLOW_RUNNER.value:

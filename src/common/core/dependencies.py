@@ -7,7 +7,8 @@ logger = logging.getLogger(__name__)
 
 
 # Just a fake random tenant id
-SINGLE_TENANT_UUID = "keep"
+GENERIC_TENANT_UUID = "keep"
+SINGLE_TENANT_UUID = GENERIC_TENANT_UUID
 SINGLE_TENANT_EMAIL = "admin@keephq"
 
 
