@@ -50,7 +50,6 @@ from sqlalchemy.sql import exists, expression
 from sqlalchemy.sql.functions import count
 from sqlmodel import Session, SQLModel, col, or_, select, text
 
-from src.common.consts import STATIC_PRESETS
 from src.common.core.config import config
 from src.common.core.db_utils import (
     create_db_engine,
@@ -82,6 +81,7 @@ from src.common.models.db.provider_image import *  # pylint: disable=unused-wild
 from src.common.models.db.rule import *  # pylint: disable=unused-wildcard-import
 from src.common.models.db.system import *  # pylint: disable=unused-wildcard-import
 from src.common.models.db.tenant import *  # pylint: disable=unused-wildcard-import
+from src.common.models.db.tenant_role_grant import TenantRoleGrant
 from src.common.models.db.topology import *  # pylint: disable=unused-wildcard-import
 from src.common.models.db.workflow import *  # pylint: disable=unused-wildcard-import
 from src.common.models.incident import IncidentDto, IncidentDtoIn, IncidentSorting
@@ -3718,22 +3718,6 @@ def get_db_preset_by_name(tenant_id: str, preset_name: str) -> Preset | None:
     return preset
 
 
-def get_db_presets(tenant_id: str) -> List[Preset]:
-    with Session(engine) as session:
-        presets = (
-            session.exec(select(Preset).where(Preset.tenant_id == tenant_id))
-            .unique()
-            .all()
-        )
-    return presets
-
-
-def get_all_presets_dtos(tenant_id: str) -> List[PresetDto]:
-    presets = get_db_presets(tenant_id)
-    static_presets_dtos = list(STATIC_PRESETS.values())
-    return [PresetDto(**preset.to_dict()) for preset in presets] + static_presets_dtos
-
-
 def get_dashboards(tenant_id: str, email=None) -> List[Dict[str, Any]]:
     with Session(engine) as session:
         statement = (
@@ -6360,3 +6344,47 @@ def recover_prev_alert_status(alert: Alert, session: Optional[Session] = None):
         query = update(Alert).where(Alert.id == alert.id).values(status=alert.status, previous_status=alert.previous_status)
         session.exec(query)
         session.commit()
+
+
+# --- Per-tenant role grants --------------------------------------
+# The tenant_role_grant table is owned (schema/migration) by keep-api-gateway;
+# workflows only READS it here to resolve a user's tenant/role at request time.
+
+_ROLE_STRENGTH = {"admin": 3, "editor": 2, "viewer": 1}
+
+
+def get_tenants_for_subjects(subjects: list[str]) -> list[Tenant]:
+    """All tenants where any of `subjects` (the caller's username/email + group
+    paths) holds a role grant."""
+    if not subjects:
+        return []
+    with Session(engine) as session:
+        tenant_ids = session.exec(
+            select(TenantRoleGrant.tenant_id).where(
+                TenantRoleGrant.subject.in_(subjects)
+            )
+        ).all()
+        if not tenant_ids:
+            return []
+        return session.exec(
+            select(Tenant).where(Tenant.id.in_(set(tenant_ids)))
+        ).all()
+
+
+def get_tenant_role_for_subjects(
+    tenant_id: str, subjects: list[str]
+) -> Optional[str]:
+    """The strongest role (admin > editor > viewer) any of `subjects` holds on
+    `tenant_id`, or None."""
+    if not subjects:
+        return None
+    with Session(engine) as session:
+        roles = session.exec(
+            select(TenantRoleGrant.role).where(
+                TenantRoleGrant.tenant_id == tenant_id,
+                TenantRoleGrant.subject.in_(subjects),
+            )
+        ).all()
+    if not roles:
+        return None
+    return max(roles, key=lambda role: _ROLE_STRENGTH.get(role, 0))

@@ -50,7 +50,11 @@ def create_alert(db_session):
         
         if last_alert:
             # Get the previous status from the latest alert associated with this LastAlert
-            prev_alert = db_session.query(Alert).get(last_alert.alert_id)
+            # Alert's PK is composite (id, timestamp), so get() can't be used
+            # with the id alone.
+            prev_alert = (
+                db_session.query(Alert).filter_by(id=last_alert.alert_id).first()
+            )
             prev_status = prev_alert.status if prev_alert else None
             
             # If it was resolved and now is firing, reset first_timestamp

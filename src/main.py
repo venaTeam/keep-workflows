@@ -12,6 +12,8 @@ from starlette.middleware.cors import CORSMiddleware
 # Importing the metrics module sets PROMETHEUS_MULTIPROC_DIR and registers the
 # keep_workflows_* metrics (including the execution counters scraped below).
 import src.common.core.metrics  # noqa: F401
+import src.common.observability
+from src.api.config import KEEP_OTEL_ENABLED
 
 load_dotenv(find_dotenv())
 
@@ -170,6 +172,11 @@ def get_app() -> FastAPI:
                 "error_msg": str(exc),
             },
         )
+
+    # Starts LoggingInstrumentor, which stamps otelServiceName on every log
+    # record. Without it nothing identifies this service in the log pipeline.
+    if KEEP_OTEL_ENABLED:
+        src.common.observability.setup(app)
 
     return app
 
