@@ -441,7 +441,7 @@ CONFIG = {
     "loggers": {
         "": {
             "handlers": ["workflowhandler", "default"],
-            "level": "DEBUG",
+            "level": LOG_LEVEL,
             "propagate": False,
         },
         "slowapi": {
