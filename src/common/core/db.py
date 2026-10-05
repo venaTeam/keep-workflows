@@ -4768,6 +4768,118 @@ def get_alerts_data_for_incident(
 
 
 @retry_on_db_error
+def inherit_incident_status(
+    tenant_id: str,
+    incident: Incident,
+    fingerprints,
+    session: Session,
+    actor: str = "keep",
+) -> List[str]:
+    """Apply a suppressed/acknowledged incident's state to alerts just linked to it.
+
+    Without this, dismissing an incident only quietens the alerts it held at that
+    moment — the next alert a correlation rule pulls in would light it up again,
+    defeating the point of dismissing it. A time-boxed dismissal is inherited
+    deadline and all, so the new alert comes back on the same clock as the
+    incident.
+
+    Only suppressed and acknowledged are inherited; a firing or resolved incident
+    has nothing to impose on an alert that just arrived. Resolved alerts are never
+    touched — an alert that has stopped firing has finished its own lifecycle, and
+    dragging it back out would misreport reality.
+
+    Suppression is written as dismiss state, NOT as status='suppressed': alerts
+    derive suppression from dismiss_mode/dismissed_until, so copying the
+    incident's deadline is what lets the alert expire with it. Writing a status
+    would strand it suppressed.
+
+    Synchronous on purpose. This sits under the rules engine, which is sync all
+    the way down, so it writes the typed columns directly instead of going
+    through the async enrichment BL. Mirrors `inherit_incident_status` in
+    keep-event-handler and `IncidentBl.inherit_incident_status` in
+    keep-api-gateway.
+    """
+    effective = incident.get_effective_status()
+    if effective not in (
+        IncidentStatus.SUPPRESSED.value,
+        IncidentStatus.ACKNOWLEDGED.value,
+    ):
+        return []
+
+    fingerprints = list(fingerprints)
+    if not fingerprints:
+        return []
+
+    if effective == IncidentStatus.SUPPRESSED.value:
+        enrichments = {
+            "dismiss_mode": incident.dismiss_mode,
+            "dismissed_until": incident.dismissed_until,
+        }
+        description = (
+            f"Alert suppressed by incident {incident.id}"
+            + (
+                f" until {incident.dismissed_until.isoformat()}"
+                if incident.dismissed_until is not None
+                else " permanently"
+            )
+        )
+    else:
+        # Acknowledged ends any dismissal the alert was under: it is visible
+        # again by definition.
+        enrichments = {
+            "status": IncidentStatus.ACKNOWLEDGED.value,
+            "dismiss_mode": None,
+            "dismissed_until": None,
+        }
+        description = f"Alert acknowledged by incident {incident.id}"
+        if incident.assignee:
+            enrichments["assignee"] = incident.assignee
+
+    rows = session.exec(
+        select(LastAlert, Alert.status)
+        .join(Alert, LastAlert.alert_id == Alert.id)
+        .where(
+            LastAlert.tenant_id == tenant_id,
+            col(LastAlert.fingerprint).in_(fingerprints),
+        )
+    ).all()
+
+    affected: List[str] = []
+    for last_alert, provider_status in rows:
+        # Effective status, not the raw column: a user-resolved alert and a
+        # provider-resolved one both have to be left alone.
+        if last_alert.get_effective_status(provider_status) == "resolved":
+            continue
+        for key, value in enrichments.items():
+            setattr(last_alert, key, value)
+        session.add(last_alert)
+        session.add(
+            AlertAudit(
+                tenant_id=tenant_id,
+                fingerprint=last_alert.fingerprint,
+                user_id=actor,
+                action=ActionType.MANUAL_STATUS_CHANGE.value,
+                description=description,
+            )
+        )
+        affected.append(last_alert.fingerprint)
+
+    if affected:
+        session.commit()
+        logger.info(
+            "Propagated incident status to newly linked alerts",
+            extra={
+                "tenant_id": tenant_id,
+                "incident_id": str(incident.id),
+                "incident_status": effective,
+                "alerts": len(affected),
+                "skipped_resolved": len(rows) - len(affected),
+            },
+        )
+
+    return affected
+
+
 def add_alerts_to_incident(
     tenant_id: str,
     incident: Incident,
@@ -4953,6 +5065,10 @@ def add_alerts_to_incident(
                         raise
             session.add(incident)
             session.refresh(incident)
+
+            # A suppressed/acknowledged incident imposes its state on alerts
+            # joining it — including the ones a correlation rule just pulled in.
+            inherit_incident_status(tenant_id, incident, new_fingerprints, session)
 
             return incident
 

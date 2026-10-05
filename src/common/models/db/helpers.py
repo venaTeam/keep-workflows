@@ -18,6 +18,13 @@ logger = logging.getLogger(__name__)
 NULL_FOR_DELETED_AT = datetime(1000, 1, 1, 0, 0)
 
 
+# "Now, in UTC" for raw SQL compared against a `dismissed_until` column, which
+# always holds UTC. CURRENT_TIMESTAMP is UTC on SQLite and offset-aware on
+# Postgres, but session-local on MySQL and server-local on SQL Server, where it
+# would shift every deadline by the server's offset. Overridden per dialect below.
+UTC_NOW_SQL = "CURRENT_TIMESTAMP"
+
+
 class DismissMode(enum.Enum):
     """How a dismissal ends. Shared by alerts (LastAlert) and incidents, which
     model dismissal identically."""
@@ -65,15 +72,16 @@ def suppressed_if_dismiss_active_sql(table: str) -> str:
     in force and NULL otherwise, so it can head a COALESCE chain and fall through
     when it is not.
 
-    CURRENT_TIMESTAMP rather than NOW() because this string is emitted verbatim
-    into whichever dialect is configured, and SQLite has no NOW().
+    The clock is `UTC_NOW_SQL` rather than a bare CURRENT_TIMESTAMP because this
+    string is emitted verbatim into whichever dialect is configured, and the
+    Python twin always compares in UTC.
     """
     return (
         "CASE"
         f" WHEN {table}.dismiss_mode = '{DismissMode.PERMANENT.value}'"
         " THEN 'suppressed'"
         f" WHEN {table}.dismiss_mode = '{DismissMode.DISMISS_UNTIL.value}'"
-        f" AND {table}.dismissed_until > CURRENT_TIMESTAMP THEN 'suppressed'"
+        f" AND {table}.dismissed_until > {UTC_NOW_SQL} THEN 'suppressed'"
         " ELSE NULL END"
     )
 
@@ -83,6 +91,7 @@ DB_CONNECTION_STRING = config("DATABASE_CONNECTION_STRING", default=None)
 if RUNNING_IN_CLOUD_RUN or DB_CONNECTION_STRING == "impersonate":
     # Millisecond precision
     DATETIME_COLUMN_TYPE = MySQL_DATETIME(fsp=3)
+    UTC_NOW_SQL = "UTC_TIMESTAMP(3)"
 # self hosted (mysql, sql server, sqlite / postgres)
 else:
     try:
@@ -91,9 +100,11 @@ else:
         if dialect == "mssql":
             # Millisecond precision
             DATETIME_COLUMN_TYPE = MSSQL_DATETIME2(precision=3)
+            UTC_NOW_SQL = "SYSUTCDATETIME()"
         elif dialect == "mysql":
             # Millisecond precision
             DATETIME_COLUMN_TYPE = MySQL_DATETIME(fsp=3)
+            UTC_NOW_SQL = "UTC_TIMESTAMP(3)"
         else:
             DATETIME_COLUMN_TYPE = DateTime
     except Exception:
