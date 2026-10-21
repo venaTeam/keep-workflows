@@ -5951,11 +5951,15 @@ def set_last_alert(
     session: Optional[Session] = None,
     max_retries=3,
     tracking: dict | None = None,
+    maintenance_window_id: int | None = None,
 ) -> None:
     # `tracking` carries the system tracking fields (last_received,
     # firing_counter, unresolved_counter, started_at, firing_start_time,
     # firing_start_time_since_last_resolved) that used to live on Alert.
     # None for a key (or tracking=None) leaves the LastAlert column unchanged.
+    # `maintenance_window_id` is the "Hide From Feed" window that matched this
+    # occurrence, or None. It is written on every newer occurrence, including
+    # None, so an occurrence no window matches makes the alert visible again.
     fingerprint = alert.fingerprint
     logger.info(f"Setting last alert for `{fingerprint}`")
     with existed_or_new_session(session) as session:
@@ -5990,6 +5994,7 @@ def set_last_alert(
                     last_alert.timestamp = alert.timestamp
                     last_alert.alert_id = alert.id
                     last_alert.alert_hash = alert.alert_hash
+                    last_alert.maintenance_window_id = maintenance_window_id
 
                     # Write relocated system tracking columns when
                     # provided. Strict allow-list — never let `tracking` clobber
@@ -6036,6 +6041,7 @@ def set_last_alert(
                         first_timestamp=alert.timestamp,
                         alert_id=alert.id,
                         alert_hash=alert.alert_hash,
+                        maintenance_window_id=maintenance_window_id,
                     )
                     # Write relocated system tracking columns when
                     # provided. Strict allow-list — see comment above.

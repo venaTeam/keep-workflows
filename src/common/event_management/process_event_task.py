@@ -428,7 +428,13 @@ def __save_to_db(
     deduplicated_events: list[AlertDto],
     provider_id: str | None = None,
     timestamp_forced: datetime.datetime | None = None,
+    hidden_window_ids: dict[int, int] | None = None,
 ):
+    """`hidden_window_ids` maps id(event) to the "Hide From Feed" window that
+    matched it. Each matched occurrence's window id is written to its LastAlert
+    row, and the returned (enriched) event objects are added to the map so the
+    caller can keep them out of workflows, correlation and client notifications."""
+    hidden_window_ids = {} if hidden_window_ids is None else hidden_window_ids
     logger.info(
         "Starting __save_to_db",
         extra={
@@ -535,6 +541,9 @@ def __save_to_db(
                                 last_alert.status = None
                                 last_alert.dismiss_mode = None
                                 last_alert.dismissed_until = None
+                        last_alert.maintenance_window_id = hidden_window_ids.get(
+                            id(event)
+                        )
                         session.add(last_alert)
                         session.flush()
                     else:
@@ -617,6 +626,8 @@ def __save_to_db(
                 },
             )
             formatted_event.pushed = True
+            # Read before the extraction rules, which may replace the object.
+            maintenance_window_id = hidden_window_ids.get(id(formatted_event))
 
             started_at = started_at_for_fingerprints.get(
                 formatted_event.fingerprint, None
@@ -1002,7 +1013,13 @@ def __save_to_db(
                         formatted_event, "firing_start_time_since_last_resolved", None
                     ),
                 }
-                set_last_alert(tenant_id, alert, session=session, tracking=tracking)
+                set_last_alert(
+                    tenant_id,
+                    alert,
+                    session=session,
+                    tracking=tracking,
+                    maintenance_window_id=maintenance_window_id,
+                )
                 logger.debug(
                     "Last alert set",
                     extra={
@@ -1111,6 +1128,8 @@ def __save_to_db(
                     },
                 )
             enriched_formatted_events.append(formatted_event)
+            if maintenance_window_id is not None:
+                hidden_window_ids[id(formatted_event)] = maintenance_window_id
             logger.debug(
                 "Completed processing formatted event",
                 extra={
@@ -1303,33 +1322,27 @@ def __handle_formatted_events(
         },
     )
 
-    # first, check for maintenance windows
+    # first, check for maintenance windows. Events matched by a "Hide From Feed"
+    # window are stored like any other, tagged with the window's id; the
+    # gateway's feed query hides them while that window is active. Keyed by
+    # id(event), not fingerprint: one batch can hold a hidden and a visible
+    # occurrence of the same fingerprint.
+    hidden_window_ids: dict[int, int] = {}
     if KEEP_MAINTENANCE_WINDOWS_ENABLED:
         with tracer.start_as_current_span("process_event_maintenance_windows_check"):
             maintenance_windows_bl = MaintenanceWindowsBl(
                 tenant_id=tenant_id, session=session
             )
             if maintenance_windows_bl.maintenance_rules:
-                formatted_events = [
-                    event
-                    for event in formatted_events
-                    if maintenance_windows_bl.check_if_alert_in_maintenance_windows(
-                        event
-                    )
-                    is False
-                ]
+                for event in formatted_events:
+                    window_id = maintenance_windows_bl.get_hiding_window_id(event)
+                    if window_id is not None:
+                        hidden_window_ids[id(event)] = window_id
             else:
                 logger.debug(
                     "No maintenance windows configured for this tenant",
                     extra={"tenant_id": tenant_id},
                 )
-
-            if not formatted_events:
-                logger.info(
-                    "No alerts to process after running maintenance windows check",
-                    extra={"tenant_id": tenant_id},
-                )
-                return
 
     with tracer.start_as_current_span("process_event_deduplication"):
         # second, filter out any deduplicated events
@@ -1382,6 +1395,7 @@ def __handle_formatted_events(
             deduplicated_events,
             provider_id,
             timestamp_forced,
+            hidden_window_ids,
         )
 
     # let's save all fields to the DB so that we can use them in the future such in deduplication fields suggestions
@@ -1447,6 +1461,18 @@ def __handle_formatted_events(
                         },
                     )
                     continue
+
+    # Hidden events stay silent while their window is active: no workflows, no
+    # correlation, no push to open feeds. They are still returned as processed.
+    hidden_events = [
+        event for event in enriched_formatted_events if id(event) in hidden_window_ids
+    ]
+    if hidden_events:
+        enriched_formatted_events = [
+            event
+            for event in enriched_formatted_events
+            if id(event) not in hidden_window_ids
+        ]
 
     if MAINTENANCE_WINDOW_ALERT_STRATEGY == "recover_previous_status":
         ignored_events = list(
@@ -1514,6 +1540,12 @@ def __handle_formatted_events(
     with tracer.start_as_current_span("process_event_notify_client"):
         if not notify_client:
             return
+        if hidden_events and not enriched_formatted_events and not incidents:
+            logger.info(
+                "All alerts in the batch are hidden by maintenance windows, not notifying",
+                extra={"tenant_id": tenant_id},
+            )
+            return hidden_events
         api_url = os.environ.get("KEEP_API_URL", "http://localhost:8080")
         logger.info(f"Notifying API at {api_url} to poll alerts for {tenant_id}")
         _notify_client(
@@ -1523,7 +1555,7 @@ def __handle_formatted_events(
             incidents,
             get_notification_cache(),
         )
-    return enriched_formatted_events
+    return enriched_formatted_events + hidden_events
 
 
 @processing_time_summary.time()
