@@ -71,10 +71,10 @@ async def async_process_watcher(*args):
                 ctx.get("pool"), DismissalExpiryBl.check_dismissal_expiry, logger
             )
 
-            # Tell open feeds about alerts revealed by ended hide-mode windows
+            # Tell open feeds when hide-mode windows end
             await loop.run_in_executor(
                 ctx.get("pool"),
-                MaintenanceWindowRevealBl.reveal_alerts_of_inactive_windows,
+                MaintenanceWindowRevealBl.notify_feeds_of_ended_windows,
                 logger,
             )
 
@@ -105,10 +105,10 @@ async def async_process_watcher(*args):
                         None, DismissalExpiryBl.check_dismissal_expiry, logger
                     )
 
-                    # Tell open feeds about alerts revealed by ended hide-mode windows
+                    # Tell open feeds when hide-mode windows end
                     await loop.run_in_executor(
                         None,
-                        MaintenanceWindowRevealBl.reveal_alerts_of_inactive_windows,
+                        MaintenanceWindowRevealBl.notify_feeds_of_ended_windows,
                         logger,
                     )
 

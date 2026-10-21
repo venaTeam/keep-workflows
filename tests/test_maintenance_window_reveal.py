@@ -1,7 +1,8 @@
 """Alerts hidden by a "Hide From Feed" maintenance window.
 
-1. The watcher step clears lastalert.maintenance_window_id once the window is
-   no longer active and tells the tenant's open feeds to refetch.
+1. The watcher step tells a tenant's open feeds to refetch when one of its
+   windows that still tags alerts has just ended. It never clears the tag:
+   visibility is decided at read time by the gateway.
 2. The mirrored pipeline stores hidden alerts instead of dropping them, tags
    them with the window's id, and keeps them out of workflows.
 """
@@ -14,6 +15,7 @@ import pytest
 from sqlmodel import select
 
 from src.common.bl.maintenance_window_reveal_bl import MaintenanceWindowRevealBl
+from src.common.consts import SSE_NOTIFY_HEADERS
 from src.common.core.db import get_last_alert_by_fingerprint
 from src.common.core.dependencies import SINGLE_TENANT_UUID
 from src.common.models.alert import AlertStatus
@@ -78,13 +80,14 @@ def _hidden_alert(session, fingerprint, window_id):
     return last_alert
 
 
-def _reveal(session):
-    with patch(
-        "src.common.bl.maintenance_window_reveal_bl.requests"
-    ) as requests_mock:
-        MaintenanceWindowRevealBl.reveal_alerts_of_inactive_windows(
-            logger, session=session
-        )
+@pytest.fixture(autouse=True)
+def fresh_watcher_state(monkeypatch):
+    monkeypatch.setattr(MaintenanceWindowRevealBl, "_last_run", None)
+
+
+def _tick(session):
+    with patch("src.common.bl.maintenance_window_reveal_bl.requests") as requests_mock:
+        MaintenanceWindowRevealBl.notify_feeds_of_ended_windows(logger, session=session)
     return requests_mock
 
 
@@ -97,70 +100,57 @@ def _window_id_of(session, fingerprint):
     ).one()
 
 
-@pytest.mark.parametrize(
-    "overrides",
-    [
-        {"end_time": _now() - datetime.timedelta(minutes=1)},
-        {"enabled": False},
-        {"suppress": True},
-    ],
-    ids=["ended", "disabled", "switched-to-suppress"],
-)
-def test_inactive_window_is_cleared_and_notified(db_session, monkeypatch, overrides):
+def test_window_that_just_ended_notifies_and_keeps_the_tag(db_session, monkeypatch):
     monkeypatch.setenv("KEEP_API_URL", "http://gateway:8080")
-    window = _window(db_session, **overrides)
-    _hidden_alert(db_session, "fp-revealed", window.id)
+    window = _window(db_session, end_time=_now() - datetime.timedelta(seconds=5))
+    _hidden_alert(db_session, "fp-ended", window.id)
 
-    requests_mock = _reveal(db_session)
+    requests_mock = _tick(db_session)
 
-    assert _window_id_of(db_session, "fp-revealed") is None
     requests_mock.post.assert_called_once_with(
         "http://gateway:8080/sse/notify",
         json={"tenant_id": SINGLE_TENANT_UUID, "event": "poll-alerts", "data": {}},
-        headers={},
+        headers=SSE_NOTIFY_HEADERS,
         timeout=5,
     )
+    assert _window_id_of(db_session, "fp-ended") == window.id
 
 
-def test_deleted_window_is_cleared_and_notified(db_session):
-    window = _window(db_session)
-    _hidden_alert(db_session, "fp-deleted", window.id)
-    db_session.delete(window)
-    db_session.commit()
-
-    requests_mock = _reveal(db_session)
-
-    assert _window_id_of(db_session, "fp-deleted") is None
-    requests_mock.post.assert_called_once()
-
-
-def test_active_window_is_left_alone(db_session):
+def test_running_window_is_not_notified(db_session):
     window = _window(db_session)
     _hidden_alert(db_session, "fp-hidden", window.id)
 
-    requests_mock = _reveal(db_session)
-
-    assert _window_id_of(db_session, "fp-hidden") == window.id
-    requests_mock.post.assert_not_called()
+    _tick(db_session).post.assert_not_called()
 
 
-def test_second_tick_does_not_notify_again(db_session):
-    window = _window(db_session, end_time=_now() - datetime.timedelta(minutes=1))
+def test_window_that_ended_long_ago_is_not_notified(db_session):
+    window = _window(db_session, end_time=_now() - datetime.timedelta(hours=2))
+    _hidden_alert(db_session, "fp-old", window.id)
+
+    _tick(db_session).post.assert_not_called()
+
+
+def test_ended_window_without_tagged_alerts_is_not_notified(db_session):
+    _window(db_session, end_time=_now() - datetime.timedelta(seconds=5))
+
+    _tick(db_session).post.assert_not_called()
+
+
+def test_each_ended_window_is_notified_once(db_session):
+    window = _window(db_session, end_time=_now() - datetime.timedelta(seconds=5))
     _hidden_alert(db_session, "fp-once", window.id)
 
-    _reveal(db_session)
-    requests_mock = _reveal(db_session)
-
-    requests_mock.post.assert_not_called()
+    _tick(db_session)
+    _tick(db_session).post.assert_not_called()
 
 
-def test_reveal_closes_owned_session(db_session):
+def test_notify_closes_owned_session(db_session):
     tracking_session = MagicMock(wraps=db_session)
     with patch(
         "src.common.bl.maintenance_window_reveal_bl.get_session_sync",
         return_value=tracking_session,
     ), patch("src.common.bl.maintenance_window_reveal_bl.requests"):
-        MaintenanceWindowRevealBl.reveal_alerts_of_inactive_windows(logger)
+        MaintenanceWindowRevealBl.notify_feeds_of_ended_windows(logger)
     tracking_session.close.assert_called_once()
 
 
@@ -169,7 +159,7 @@ def test_reveal_closes_owned_session(db_session):
 # --------------------------------------------------------------------------- #
 
 
-def _send(fingerprint, status, minutes, source=SOURCE):
+def _send(fingerprint, status, minutes, source=SOURCE, severity="high"):
     from src.common.event_management.process_event_task import process_event
 
     ts = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
@@ -187,7 +177,7 @@ def _send(fingerprint, status, minutes, source=SOURCE):
             "name": f"test-{fingerprint}",
             "last_received": ts.isoformat(),
             "status": status.value,
-            "severity": "high",
+            "severity": severity,
             "source": [source],
             "fingerprint": fingerprint,
         },
@@ -215,6 +205,19 @@ def test_pipeline_stores_hidden_alert_and_skips_workflows(db_session):
     assert last_alert.maintenance_window_id == window.id
     insert_events = workflow_manager.get_instance.return_value.insert_events
     assert all(call.args[1] == [] for call in insert_events.call_args_list)
+
+
+def test_pipeline_keeps_an_already_firing_alert_visible(db_session):
+    _send("fp-pipeline-firing", AlertStatus.FIRING, 0)
+    _window(db_session)
+
+    _send("fp-pipeline-firing", AlertStatus.FIRING, 1, severity="critical")
+
+    db_session.expire_all()
+    last_alert = get_last_alert_by_fingerprint(
+        SINGLE_TENANT_UUID, "fp-pipeline-firing", session=db_session
+    )
+    assert last_alert.maintenance_window_id is None
 
 
 def test_pipeline_non_matching_occurrence_clears_the_window(db_session):
