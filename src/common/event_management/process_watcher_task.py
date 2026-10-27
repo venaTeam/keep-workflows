@@ -14,7 +14,8 @@ logger = logging.getLogger(__name__)
 
 
 async def start_watcher_if_enabled():
-    """Start the watcher (dismissal expiry, maintenance-window recovery and reveal).
+    """Start the watcher (dismissal expiry, maintenance-window recovery, reveal
+    and freeze catch-up).
 
     Mode flags are read at call time from src.api.config / src.common.consts.
     Returns the asyncio task for the non-Redis loop, None otherwise.
@@ -78,6 +79,13 @@ async def async_process_watcher(*args):
                 logger,
             )
 
+            # Catch up alerts a hide-mode window froze once it is not active
+            await loop.run_in_executor(
+                ctx.get("pool"),
+                MaintenanceWindowRevealBl.catch_up_released_alerts,
+                logger,
+            )
+
         except Exception as e:
             logger.error("Error in watcher process: %s", e, exc_info=True)
             raise
@@ -109,6 +117,13 @@ async def async_process_watcher(*args):
                     await loop.run_in_executor(
                         None,
                         MaintenanceWindowRevealBl.notify_feeds_of_ended_windows,
+                        logger,
+                    )
+
+                    # Catch up alerts a hide-mode window froze once it is not active
+                    await loop.run_in_executor(
+                        None,
+                        MaintenanceWindowRevealBl.catch_up_released_alerts,
                         logger,
                     )
 

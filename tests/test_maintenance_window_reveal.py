@@ -4,7 +4,10 @@
    windows that still tags alerts has just ended. It never clears the tag:
    visibility is decided at read time by the gateway.
 2. The mirrored pipeline stores hidden alerts instead of dropping them, tags
-   them with the window's id, and keeps them out of workflows.
+   them with the window's id, and keeps them out of workflows. An alert already
+   on screen is frozen instead: its row holds the latest occurrence back.
+3. The watcher step catches frozen alerts up once their window is no longer
+   active, however it stopped.
 """
 
 import datetime
@@ -207,17 +210,134 @@ def test_pipeline_stores_hidden_alert_and_skips_workflows(db_session):
     assert all(call.args[1] == [] for call in insert_events.call_args_list)
 
 
-def test_pipeline_keeps_an_already_firing_alert_visible(db_session):
+def _last(session, fingerprint):
+    session.expire_all()
+    return get_last_alert_by_fingerprint(SINGLE_TENANT_UUID, fingerprint, session=session)
+
+
+def _latest(session, fingerprint):
+    alerts = session.exec(select(Alert).where(Alert.fingerprint == fingerprint)).all()
+    return max(alerts, key=lambda a: a.timestamp)
+
+
+def test_pipeline_keeps_an_already_firing_alert_visible_but_frozen(db_session):
     _send("fp-pipeline-firing", AlertStatus.FIRING, 0)
-    _window(db_session)
+    shown_alert_id = _last(db_session, "fp-pipeline-firing").alert_id
+    window = _window(db_session)
 
-    _send("fp-pipeline-firing", AlertStatus.FIRING, 1, severity="critical")
+    with patch(
+        "src.common.event_management.process_event_task.WorkflowManager"
+    ) as workflow_manager:
+        _send("fp-pipeline-firing", AlertStatus.FIRING, 1, severity="critical")
+        _send("fp-pipeline-firing", AlertStatus.FIRING, 2, severity="low")
 
-    db_session.expire_all()
-    last_alert = get_last_alert_by_fingerprint(
-        SINGLE_TENANT_UUID, "fp-pipeline-firing", session=db_session
-    )
+    last_alert = _last(db_session, "fp-pipeline-firing")
     assert last_alert.maintenance_window_id is None
+    assert last_alert.alert_id == shown_alert_id
+    assert last_alert.maintenance_frozen_window_id == window.id
+    assert last_alert.maintenance_pending_firing_count == 2
+    assert (
+        last_alert.maintenance_pending_alert_id
+        == _latest(db_session, "fp-pipeline-firing").id
+    )
+    insert_events = workflow_manager.get_instance.return_value.insert_events
+    assert all(call.args[1] == [] for call in insert_events.call_args_list)
+
+
+# --------------------------------------------------------------------------- #
+# Freeze catch-up
+# --------------------------------------------------------------------------- #
+
+
+def _frozen(session, fingerprint, held_back=2):
+    """An alert on screen, then `held_back` occurrences frozen by a window."""
+    _send(fingerprint, AlertStatus.FIRING, 0)
+    window = _window(session)
+    for minute in range(1, held_back + 1):
+        _send(fingerprint, AlertStatus.FIRING, minute, severity=f"sev-{minute}")
+    return window
+
+
+def _catch_up(session):
+    with patch("src.common.bl.maintenance_window_reveal_bl.requests") as requests_mock:
+        MaintenanceWindowRevealBl.catch_up_released_alerts(logger, session=session)
+    return requests_mock.post
+
+
+def test_catch_up_after_the_window_is_disabled(db_session):
+    window = _frozen(db_session, "fp-catch-up", held_back=3)
+    before = _last(db_session, "fp-catch-up")
+    firing_counter_before = before.firing_counter
+    held_received = before.maintenance_pending_last_received
+
+    window.enabled = False
+    db_session.add(window)
+    db_session.commit()
+    post = _catch_up(db_session)
+
+    last_alert = _last(db_session, "fp-catch-up")
+    assert last_alert.alert_id == _latest(db_session, "fp-catch-up").id
+    assert last_alert.firing_counter == firing_counter_before + 3
+    assert last_alert.last_received == held_received
+    assert last_alert.maintenance_pending_firing_count is None
+    assert last_alert.maintenance_frozen_window_id is None
+    assert last_alert.maintenance_pending_alert_id is None
+    post.assert_called_once()
+    assert post.call_args.kwargs["json"] == {
+        "tenant_id": SINGLE_TENANT_UUID,
+        "event": "poll-alerts",
+        "data": {},
+    }
+
+
+def test_no_catch_up_while_the_window_is_active(db_session):
+    _frozen(db_session, "fp-still-frozen")
+    shown_alert_id = _last(db_session, "fp-still-frozen").alert_id
+
+    post = _catch_up(db_session)
+
+    last_alert = _last(db_session, "fp-still-frozen")
+    assert last_alert.alert_id == shown_alert_id
+    assert last_alert.maintenance_pending_firing_count == 2
+    post.assert_not_called()
+
+
+def test_catch_up_after_the_window_is_deleted(db_session):
+    window = _frozen(db_session, "fp-deleted-window")
+    db_session.delete(window)
+    db_session.commit()
+
+    _catch_up(db_session)
+
+    last_alert = _last(db_session, "fp-deleted-window")
+    assert last_alert.alert_id == _latest(db_session, "fp-deleted-window").id
+    assert last_alert.maintenance_pending_firing_count is None
+
+
+def test_catch_up_of_a_row_released_by_a_window_edit(db_session):
+    """The gateway clears maintenance_frozen_window_id on alerts an edited
+    window no longer matches; the window itself is still active."""
+    _frozen(db_session, "fp-released")
+    last_alert = _last(db_session, "fp-released")
+    last_alert.maintenance_frozen_window_id = None
+    db_session.add(last_alert)
+    db_session.commit()
+
+    _catch_up(db_session)
+
+    last_alert = _last(db_session, "fp-released")
+    assert last_alert.alert_id == _latest(db_session, "fp-released").id
+    assert last_alert.maintenance_pending_firing_count is None
+
+
+def test_catch_up_closes_owned_session(db_session):
+    tracking_session = MagicMock(wraps=db_session)
+    with patch(
+        "src.common.bl.maintenance_window_reveal_bl.get_session_sync",
+        return_value=tracking_session,
+    ), patch("src.common.bl.maintenance_window_reveal_bl.requests"):
+        MaintenanceWindowRevealBl.catch_up_released_alerts(logger)
+    tracking_session.close.assert_called_once()
 
 
 def test_pipeline_non_matching_occurrence_clears_the_window(db_session):
