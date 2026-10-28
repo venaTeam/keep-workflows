@@ -60,6 +60,75 @@ def javascript_iso_format(last_received) -> str:
     return dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+def derive_tracking_fields(
+    alert_status: str,
+    last_received: str,
+    previous: Optional[LastAlert],
+) -> dict:
+    """Derive the cross-occurrence tracking fields for a new occurrence.
+
+    Mirror of keep-event-handler's derive_tracking_fields. Used here to catch
+    up an alert a maintenance window froze (fold_held_back_occurrence), whose
+    counters the calculated_* helpers below cannot derive: they read the
+    previous occurrence outside the LastAlert row lock.
+
+    ``previous`` is the LastAlert row as it stands *before* this occurrence is
+    applied to it (None for a fingerprint's first occurrence). Every input lives
+    on that row, so recording an occurrence never has to read the partitioned
+    ``alert`` history.
+
+    A previous row with a NULL ``status`` either predates the typed-column model
+    or was written while the tracking calculation was disabled. NULL means the
+    fingerprint was never resolved, acknowledged or dismissed, so it reads as
+    firing; a missing start-time falls back to this occurrence's
+    ``last_received`` rather than staying NULL forever.
+    """
+    firing = AlertStatus.FIRING.value
+    resolved = AlertStatus.RESOLVED.value
+    acknowledged = AlertStatus.ACKNOWLEDGED.value
+
+    previous_status = None if previous is None else (previous.status or firing)
+
+    if alert_status != firing:
+        firing_start_time = None
+    elif previous is None or previous_status != firing:
+        firing_start_time = last_received
+    else:
+        firing_start_time = previous.firing_start_time or last_received
+
+    if alert_status == resolved:
+        since_last_resolved = None
+    elif previous is None:
+        since_last_resolved = last_received if alert_status == firing else None
+    elif previous_status == resolved and alert_status == firing:
+        since_last_resolved = last_received
+    else:
+        since_last_resolved = previous.firing_start_time_since_last_resolved
+        if since_last_resolved is None and alert_status == firing:
+            since_last_resolved = last_received
+
+    if alert_status == acknowledged:
+        firing_counter = 0
+    elif previous is None or previous_status == acknowledged:
+        firing_counter = 1
+    else:
+        firing_counter = (previous.firing_counter or 0) + 1
+
+    if alert_status == resolved:
+        unresolved_counter = 0
+    elif previous is None or previous_status == resolved:
+        unresolved_counter = 1
+    else:
+        unresolved_counter = (previous.unresolved_counter or 0) + 1
+
+    return {
+        "firing_start_time": firing_start_time,
+        "firing_start_time_since_last_resolved": since_last_resolved,
+        "firing_counter": firing_counter,
+        "unresolved_counter": unresolved_counter,
+    }
+
+
 # parse_and_enrich_deleted_and_assignees removed. `deleted` and
 # `assignee` are now typed LastAlert columns (direct bool / str) instead of
 # timestamp-keyed list/dict enrichments, so callers setattr() them straight
