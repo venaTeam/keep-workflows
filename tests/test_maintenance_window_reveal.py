@@ -430,3 +430,18 @@ def test_window_that_ended_notifies_when_it_is_only_a_tag(db_session):
     requests_mock = _tick(db_session)
 
     requests_mock.post.assert_called_once()
+
+
+def test_pipeline_freezes_a_resolved_alert_instead_of_hiding_it(db_session):
+    _send("fp-pipeline-refire", AlertStatus.FIRING, 0)
+    _send("fp-pipeline-refire", AlertStatus.RESOLVED, 1)
+    shown_alert_id = _last(db_session, "fp-pipeline-refire").alert_id
+    window = _window(db_session)
+
+    _send("fp-pipeline-refire", AlertStatus.FIRING, 2, severity="critical")
+
+    last_alert = _last(db_session, "fp-pipeline-refire")
+    assert last_alert.maintenance_window_id is None
+    assert last_alert.alert_id == shown_alert_id
+    assert last_alert.maintenance_frozen_window_id == window.id
+    assert last_alert.maintenance_pending_firing_count == 1
