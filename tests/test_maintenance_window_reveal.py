@@ -351,3 +351,82 @@ def test_pipeline_non_matching_occurrence_clears_the_window(db_session):
         SINGLE_TENANT_UUID, "fp-pipeline-resolve", session=db_session
     )
     assert last_alert.maintenance_window_id is None
+
+
+# --------------------------------------------------------------------------- #
+# Several windows matching one alert
+# --------------------------------------------------------------------------- #
+
+
+def _tags(session, fingerprint):
+    from src.common.models.db.alert import LastAlertMaintenanceWindow
+
+    session.expire_all()
+    rows = session.exec(
+        select(LastAlertMaintenanceWindow).where(
+            LastAlertMaintenanceWindow.fingerprint == fingerprint
+        )
+    ).all()
+    return sorted((row.kind, row.maintenance_window_id) for row in rows)
+
+
+def test_pipeline_tags_every_matching_window(db_session):
+    a = _window(db_session, name="A")
+    b = _window(db_session, name="B", end_time=_now() + datetime.timedelta(hours=2))
+
+    _send("fp-two-windows", AlertStatus.FIRING, 0)
+
+    assert _last(db_session, "fp-two-windows").maintenance_window_id == b.id
+    assert _tags(db_session, "fp-two-windows") == sorted([("hide", a.id), ("hide", b.id)])
+
+
+def test_catch_up_waits_for_every_freezing_window(db_session):
+    _send("fp-two-freezes", AlertStatus.FIRING, 0)
+    shown_alert_id = _last(db_session, "fp-two-freezes").alert_id
+    a = _window(db_session, name="A")
+    b = _window(db_session, name="B", end_time=_now() + datetime.timedelta(hours=2))
+    _send("fp-two-freezes", AlertStatus.FIRING, 1, severity="critical")
+    assert _last(db_session, "fp-two-freezes").maintenance_frozen_window_id == b.id
+
+    # B (the marker) stops; A still freezes the alert.
+    b.enabled = False
+    db_session.add(b)
+    db_session.commit()
+    post = _catch_up(db_session)
+
+    assert _last(db_session, "fp-two-freezes").alert_id == shown_alert_id
+    post.assert_not_called()
+
+    # A stops too: nothing freezes it any more.
+    a.enabled = False
+    db_session.add(a)
+    db_session.commit()
+    post = _catch_up(db_session)
+
+    last_alert = _last(db_session, "fp-two-freezes")
+    assert last_alert.alert_id == _latest(db_session, "fp-two-freezes").id
+    assert last_alert.maintenance_pending_firing_count is None
+    assert _tags(db_session, "fp-two-freezes") == []
+    post.assert_called_once()
+
+
+def test_window_that_ended_notifies_when_it_is_only_a_tag(db_session):
+    """The window that ended is one of the row's hide tags, not its marker."""
+    from src.common.models.db.alert import LastAlertMaintenanceWindow
+
+    ended = _window(db_session, name="ended", end_time=_now() - datetime.timedelta(seconds=5))
+    running = _window(db_session, name="running")
+    _hidden_alert(db_session, "fp-tag-ended", running.id)
+    db_session.add(
+        LastAlertMaintenanceWindow(
+            tenant_id=SINGLE_TENANT_UUID,
+            fingerprint="fp-tag-ended",
+            kind="hide",
+            maintenance_window_id=ended.id,
+        )
+    )
+    db_session.commit()
+
+    requests_mock = _tick(db_session)
+
+    requests_mock.post.assert_called_once()

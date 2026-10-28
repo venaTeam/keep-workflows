@@ -34,7 +34,7 @@ from src.common.core.db import (
     get_last_alert_by_fingerprint,
     get_session_sync,
 )
-from src.common.models.db.alert import LastAlert
+from src.common.models.db.alert import LastAlert, LastAlertMaintenanceWindow
 from src.common.models.db.maintenance_window import MaintenanceWindowRule
 
 # Extra lookback on the first run after start, so a window that ended while the
@@ -50,12 +50,12 @@ def _utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
 
 
-def _freezing_window_active(now: datetime.datetime):
-    """True while a row's freezing window still freezes it. Same definition of
+def _window_active(window_id, tenant_id, now: datetime.datetime):
+    """True while that hide-mode window is running. Same definition of
     "active" as the gateway's hidden_by_maintenance_window_filter."""
     return exists().where(
-        MaintenanceWindowRule.id == LastAlert.maintenance_frozen_window_id,
-        MaintenanceWindowRule.tenant_id == LastAlert.tenant_id,
+        MaintenanceWindowRule.id == window_id,
+        MaintenanceWindowRule.tenant_id == tenant_id,
         MaintenanceWindowRule.enabled.is_(True),
         MaintenanceWindowRule.suppress.is_(False),
         MaintenanceWindowRule.start_time <= now,
@@ -63,8 +63,23 @@ def _freezing_window_active(now: datetime.datetime):
     )
 
 
+def _freezing_window_active(now: datetime.datetime):
+    """True while any window freezing a row is still active: its marker
+    (maintenance_frozen_window_id) or one of its 'freeze' tags."""
+    tag = LastAlertMaintenanceWindow
+    return _window_active(
+        LastAlert.maintenance_frozen_window_id, LastAlert.tenant_id, now
+    ) | exists().where(
+        tag.tenant_id == LastAlert.tenant_id,
+        tag.fingerprint == LastAlert.fingerprint,
+        tag.kind == "freeze",
+        _window_active(tag.maintenance_window_id, tag.tenant_id, now),
+    )
+
+
 def _released(now: datetime.datetime):
-    """The row holds something back and nothing freezes it any more."""
+    """The row holds something back and none of its freezing windows is
+    active any more."""
     return LastAlert.maintenance_pending_firing_count.is_not(None) & or_(
         LastAlert.maintenance_frozen_window_id.is_(None),
         ~_freezing_window_active(now),
@@ -100,11 +115,16 @@ class MaintenanceWindowRevealBl:
     def get_tenants_with_ended_windows(
         session: Session, since: datetime.datetime, until: datetime.datetime
     ) -> list[str]:
-        """Tenants with a window that ended in (since, until] and still tags
-        lastalert rows. Window times are naive UTC."""
+        """Tenants with a window that ended in (since, until] and still hides
+        lastalert rows, as their marker or one of their 'hide' tags. Window
+        times are naive UTC."""
         tags_alerts = exists().where(
             LastAlert.tenant_id == MaintenanceWindowRule.tenant_id,
             LastAlert.maintenance_window_id == MaintenanceWindowRule.id,
+        ) | exists().where(
+            LastAlertMaintenanceWindow.tenant_id == MaintenanceWindowRule.tenant_id,
+            LastAlertMaintenanceWindow.maintenance_window_id == MaintenanceWindowRule.id,
+            LastAlertMaintenanceWindow.kind == "hide",
         )
         return session.exec(
             select(MaintenanceWindowRule.tenant_id)
