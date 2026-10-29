@@ -23,6 +23,8 @@ _LASTALERT_USER_COLUMNS = (
     "assignee",
     "note",
     "deleted",
+    "automation_matched",
+    "grace_seconds",
 )
 # system tracking fields relocated from Alert to LastAlert.
 _LASTALERT_TRACKING_COLUMNS = (
