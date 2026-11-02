@@ -43,7 +43,7 @@ from sqlalchemy.dialects.postgresql import JSONB as PG_JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError, InternalError, OperationalError
-from sqlalchemy.orm import foreign, joinedload, subqueryload
+from sqlalchemy.orm import aliased, foreign, joinedload, subqueryload
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.orm.exc import StaleDataError
 from sqlalchemy.sql import exists, expression
@@ -3171,14 +3171,102 @@ def get_all_deduplication_stats(tenant_id):
     return stats
 
 
+def get_last_alert_window_states(
+    tenant_id, fingerprints: list[str], session: Optional[Session] = None
+) -> dict[str, tuple[set[int], str | None]]:
+    """For each fingerprint that has a LastAlert row: the windows hiding it
+    (its marker plus its 'hide' tags) and the provider status of the
+    occurrence the feed shows. Used to decide whether a "Hide From Feed"
+    window hides a new occurrence or freezes the alert already on screen."""
+    if not fingerprints:
+        return {}
+    with existed_or_new_session(session) as session:
+        query = (
+            select(LastAlert.fingerprint, LastAlert.maintenance_window_id, Alert.status)
+            .join(
+                Alert,
+                and_(Alert.id == LastAlert.alert_id, Alert.tenant_id == LastAlert.tenant_id),
+            )
+            .where(LastAlert.tenant_id == tenant_id)
+            .where(LastAlert.fingerprint.in_(fingerprints))
+        )
+        states = {
+            fingerprint: ({window_id} if window_id is not None else set(), status)
+            for fingerprint, window_id, status in session.exec(query).all()
+        }
+        tagged = [fp for fp, (windows, _) in states.items() if windows]
+        if tagged:
+            for fingerprint, window_id in session.exec(
+                select(
+                    LastAlertMaintenanceWindow.fingerprint,
+                    LastAlertMaintenanceWindow.maintenance_window_id,
+                ).where(
+                    LastAlertMaintenanceWindow.tenant_id == tenant_id,
+                    LastAlertMaintenanceWindow.fingerprint.in_(tagged),
+                    LastAlertMaintenanceWindow.kind == MAINTENANCE_TAG_HIDE,
+                )
+            ).all():
+                states[fingerprint][0].add(window_id)
+        return states
+
+
+MAINTENANCE_TAG_HIDE = "hide"
+MAINTENANCE_TAG_FREEZE = "freeze"
+_MAINTENANCE_MARKERS = {
+    MAINTENANCE_TAG_HIDE: "maintenance_window_id",
+    MAINTENANCE_TAG_FREEZE: "maintenance_frozen_window_id",
+}
+
+
+def set_maintenance_window_tags(
+    session: Session, last_alert: LastAlert, kind: str, window_ids: list[int]
+) -> None:
+    """Make `window_ids` the row's windows of `kind` ('hide' or 'freeze'):
+    the marker column gets the first one (the window that ends last, as
+    MaintenanceWindowsBl orders them) or NULL, and the tag rows are replaced.
+    Untagged rows that stay untagged touch nothing. Does not commit."""
+    marker = _MAINTENANCE_MARKERS[kind]
+    if getattr(last_alert, marker) is None and not window_ids:
+        return
+    from sqlalchemy import delete
+
+    session.execute(
+        delete(LastAlertMaintenanceWindow).where(
+            LastAlertMaintenanceWindow.tenant_id == last_alert.tenant_id,
+            LastAlertMaintenanceWindow.fingerprint == last_alert.fingerprint,
+            LastAlertMaintenanceWindow.kind == kind,
+        )
+    )
+    setattr(last_alert, marker, window_ids[0] if window_ids else None)
+    for window_id in dict.fromkeys(window_ids):
+        session.add(
+            LastAlertMaintenanceWindow(
+                tenant_id=last_alert.tenant_id,
+                fingerprint=last_alert.fingerprint,
+                kind=kind,
+                maintenance_window_id=window_id,
+            )
+        )
+
+
 def get_last_alert_hashes_by_fingerprints(
     tenant_id, fingerprints: list[str]
 ) -> dict[str, str | None]:
     # get the last alert hashes for a list of fingerprints
-    # to check deduplication
+    # to check deduplication. An alert a maintenance window froze still points
+    # at its pre-window occurrence, so compare against the occurrence it holds
+    # back instead: that is the latest one received.
+    pending_alert = aliased(Alert)
     with Session(engine) as session:
         query = (
-            select(LastAlert.fingerprint, LastAlert.alert_hash)
+            select(LastAlert.fingerprint, LastAlert.alert_hash, pending_alert.alert_hash)
+            .outerjoin(
+                pending_alert,
+                and_(
+                    pending_alert.id == LastAlert.maintenance_pending_alert_id,
+                    pending_alert.tenant_id == LastAlert.tenant_id,
+                ),
+            )
             .where(LastAlert.tenant_id == tenant_id)
             .where(LastAlert.fingerprint.in_(fingerprints))
         )
@@ -3187,9 +3275,9 @@ def get_last_alert_hashes_by_fingerprints(
 
         # Create a dictionary from the results
         alert_hash_dict = {
-            fingerprint: alert_hash
-            for fingerprint, alert_hash in results
-            if alert_hash is not None
+            fingerprint: pending_hash or alert_hash
+            for fingerprint, alert_hash, pending_hash in results
+            if (pending_hash or alert_hash) is not None
         }
         return alert_hash_dict
 
@@ -5945,17 +6033,174 @@ def get_last_alert_by_fingerprint(
         return session.exec(query).first()
 
 
+def apply_status_lifecycle(last_alert: LastAlert, alert_status: str) -> None:
+    """Status / dismiss clearing on re-fire vs resolve, for a new occurrence
+    applied to `last_alert`."""
+    if alert_status != AlertStatus.RESOLVED.value:
+        if last_alert.status_disposable:
+            last_alert.status = None
+            last_alert.status_disposable = False
+    else:
+        if last_alert.dismiss_mode not in (
+            "permanent",
+            "dismiss_until",
+        ):
+            last_alert.status = None
+            last_alert.dismiss_mode = None
+            last_alert.dismissed_until = None
+
+
+def _as_utc(value: datetime) -> datetime:
+    """Treat a naive datetime as UTC (SQLite returns naive values)."""
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def hold_back_occurrence(
+    tenant_id: str,
+    fingerprint: str,
+    window_ids: list[int],
+    last_received: datetime,
+    session: Session,
+    alert: Optional[Alert] = None,
+) -> Optional[LastAlert]:
+    """Record an occurrence of an alert "Hide From Feed" windows freeze,
+    without changing what the feed shows. `window_ids` are every window that
+    matched it; the row stays frozen until none of them is active.
+
+    The row keeps pointing at the occurrence from before the window; the new
+    one is counted and, when it is the latest, kept as the occurrence to catch
+    up to once the window stops being active (fold_held_back_occurrence).
+    `alert` is the stored occurrence, or None for a deduplicated one, which
+    only moves the held-back receive time.
+
+    Returns the locked row, or None when the fingerprint has no row yet (the
+    caller then records the occurrence normally).
+    """
+    last_alert = get_last_alert_by_fingerprint(
+        tenant_id, fingerprint, session, for_update=True
+    )
+    if last_alert is None:
+        return None
+
+    held_received = last_alert.maintenance_pending_last_received
+    is_latest = held_received is None or _as_utc(last_received) >= _as_utc(
+        held_received
+    )
+    count = last_alert.maintenance_pending_firing_count or 0
+    if alert is not None:
+        count += 1
+        if is_latest:
+            last_alert.maintenance_pending_alert_id = alert.id
+    if is_latest:
+        last_alert.maintenance_pending_last_received = last_received
+    last_alert.maintenance_pending_firing_count = count
+    set_maintenance_window_tags(
+        session, last_alert, MAINTENANCE_TAG_FREEZE, window_ids
+    )
+    session.add(last_alert)
+    session.commit()
+    return last_alert
+
+
+def fold_held_back_occurrence(last_alert: LastAlert, session: Session) -> bool:
+    """Apply what a maintenance-window freeze held back to `last_alert`, in
+    place and without committing. The caller holds the row lock.
+
+    Repoints the row at the latest held-back occurrence and replays the
+    derived tracking fields once per held-back occurrence, so firing_counter /
+    unresolved_counter come out as if each had been applied in turn. The
+    replay uses the latest occurrence's status and receive time for all of
+    them. Duplicates-only (no occurrence stored) moves last_received and runs
+    the status lifecycle for the occurrence already shown.
+
+    Returns False when the row holds nothing back.
+    """
+    from src.common.utils.enrichment_helpers import (
+        derive_tracking_fields,
+        javascript_iso_format,
+    )
+
+    count = last_alert.maintenance_pending_firing_count
+    if count is None:
+        return False
+
+    tenant_id = last_alert.tenant_id
+    fingerprint = last_alert.fingerprint
+    held_received = last_alert.maintenance_pending_last_received
+    pending = None
+    if last_alert.maintenance_pending_alert_id is not None:
+        pending = session.exec(
+            select(Alert).where(
+                Alert.tenant_id == tenant_id,
+                Alert.id == last_alert.maintenance_pending_alert_id,
+            )
+        ).first()
+
+    if pending is not None and _as_utc(pending.timestamp) > _as_utc(
+        last_alert.timestamp
+    ):
+        last_received_str = javascript_iso_format(held_received or pending.timestamp)
+        for _ in range(max(count, 1)):
+            derived = derive_tracking_fields(
+                pending.status, last_received_str, last_alert
+            )
+            for column, value in derived.items():
+                setattr(last_alert, column, value)
+            apply_status_lifecycle(last_alert, pending.status)
+        last_alert.timestamp = pending.timestamp
+        last_alert.alert_id = pending.id
+        last_alert.alert_hash = pending.alert_hash
+        # The held-back occurrences were frozen, not hidden.
+        set_maintenance_window_tags(session, last_alert, MAINTENANCE_TAG_HIDE, [])
+    else:
+        shown_status = session.exec(
+            select(Alert.status).where(
+                Alert.tenant_id == tenant_id, Alert.id == last_alert.alert_id
+            )
+        ).first()
+        if shown_status:
+            apply_status_lifecycle(last_alert, shown_status)
+
+    if held_received is not None and (
+        last_alert.last_received is None
+        or _as_utc(held_received) > _as_utc(last_alert.last_received)
+    ):
+        last_alert.last_received = held_received
+
+    set_maintenance_window_tags(session, last_alert, MAINTENANCE_TAG_FREEZE, [])
+    last_alert.maintenance_pending_alert_id = None
+    last_alert.maintenance_pending_last_received = None
+    last_alert.maintenance_pending_firing_count = None
+    logger.info(
+        "Caught up alert held back by a maintenance window",
+        extra={
+            "tenant_id": tenant_id,
+            "fingerprint": fingerprint,
+            "held_back_occurrences": count,
+        },
+    )
+    return True
+
+
 def set_last_alert(
     tenant_id: str,
     alert: Alert,
     session: Optional[Session] = None,
     max_retries=3,
     tracking: dict | None = None,
+    maintenance_window_ids: list[int] | None = None,
 ) -> None:
     # `tracking` carries the system tracking fields (last_received,
     # firing_counter, unresolved_counter, started_at, firing_start_time,
     # firing_start_time_since_last_resolved) that used to live on Alert.
     # None for a key (or tracking=None) leaves the LastAlert column unchanged.
+    # `maintenance_window_ids` are the "Hide From Feed" windows that matched
+    # this occurrence, the one that ends last first, or empty. They are written
+    # on every newer occurrence (set_maintenance_window_tags), including none,
+    # so an occurrence no window matches makes the alert visible again.
+    # Anything a maintenance-window freeze held back is folded in first
+    # (fold_held_back_occurrence); frozen occurrences use hold_back_occurrence
+    # instead of this function.
     fingerprint = alert.fingerprint
     logger.info(f"Setting last alert for `{fingerprint}`")
     with existed_or_new_session(session) as session:
@@ -5972,6 +6217,24 @@ def set_last_alert(
                 last_alert = get_last_alert_by_fingerprint(
                     tenant_id, fingerprint, session, for_update=True
                 )
+                # An occurrence the window did not freeze ends the freeze:
+                # catch up first so it is derived from the held-back state.
+                folded = last_alert is not None and fold_held_back_occurrence(
+                    last_alert, session
+                )
+                if folded:
+                    from src.common.utils.enrichment_helpers import (
+                        derive_tracking_fields,
+                        javascript_iso_format,
+                    )
+
+                    derived_after_fold = derive_tracking_fields(
+                        alert.status,
+                        javascript_iso_format(
+                            (tracking or {}).get("last_received") or alert.timestamp
+                        ),
+                        last_alert,
+                    )
 
                 # To prevent rare, but possible race condition
                 # For example if older alert failed to process
@@ -5990,6 +6253,16 @@ def set_last_alert(
                     last_alert.timestamp = alert.timestamp
                     last_alert.alert_id = alert.id
                     last_alert.alert_hash = alert.alert_hash
+                    set_maintenance_window_tags(
+                        session,
+                        last_alert,
+                        MAINTENANCE_TAG_HIDE,
+                        maintenance_window_ids or [],
+                    )
+                    if folded and tracking is not None:
+                        # `tracking` was derived from the row before the
+                        # catch-up; re-derive this occurrence from the folded row.
+                        tracking = {**tracking, **derived_after_fold}
 
                     # Write relocated system tracking columns when
                     # provided. Strict allow-list — never let `tracking` clobber
@@ -6011,19 +6284,7 @@ def set_last_alert(
                             setattr(last_alert, _col, _val)
 
                     # Status / dismiss clearing on re-fire vs resolve.
-                    resolved = alert.status == AlertStatus.RESOLVED.value
-                    if not resolved:
-                        if last_alert.status_disposable:
-                            last_alert.status = None
-                            last_alert.status_disposable = False
-                    else:
-                        if last_alert.dismiss_mode not in (
-                            "permanent",
-                            "dismiss_until",
-                        ):
-                            last_alert.status = None
-                            last_alert.dismiss_mode = None
-                            last_alert.dismissed_until = None
+                    apply_status_lifecycle(last_alert, alert.status)
 
                     session.add(last_alert)
 
@@ -6036,6 +6297,12 @@ def set_last_alert(
                         first_timestamp=alert.timestamp,
                         alert_id=alert.id,
                         alert_hash=alert.alert_hash,
+                    )
+                    set_maintenance_window_tags(
+                        session,
+                        new_last_alert,
+                        MAINTENANCE_TAG_HIDE,
+                        maintenance_window_ids or [],
                     )
                     # Write relocated system tracking columns when
                     # provided. Strict allow-list — see comment above.
