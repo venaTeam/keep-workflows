@@ -13,6 +13,7 @@ from starlette.middleware.cors import CORSMiddleware
 # keep_workflows_* metrics (including the execution counters scraped below).
 import src.common.core.metrics  # noqa: F401
 import src.common.observability
+from src.api.middlewares import LoggingMiddleware
 from src.api.config import KEEP_OTEL_ENABLED
 
 load_dotenv(find_dotenv())
@@ -164,7 +165,15 @@ def get_app() -> FastAPI:
 
     @app.exception_handler(Exception)
     async def catch_exception(request: Request, exc: Exception):
-        logger.error(f"An unhandled exception occurred: {exc}")
+        logger.error(
+            "An unhandled exception occurred",
+            exc_info=exc,
+            extra={
+                "error": str(exc),
+                "trace_id": getattr(request.state, "trace_id", None),
+                "tenant_id": getattr(request.state, "tenant_id", None),
+            },
+        )
         return JSONResponse(
             status_code=500,
             content={
@@ -172,6 +181,10 @@ def get_app() -> FastAPI:
                 "error_msg": str(exc),
             },
         )
+
+    # One log per request and per-request log context; added before
+    # observability so its TraceIDMiddleware runs first and sets trace_id.
+    app.add_middleware(LoggingMiddleware)
 
     # Starts LoggingInstrumentor, which stamps otelServiceName on every log
     # record. Without it nothing identifies this service in the log pipeline.

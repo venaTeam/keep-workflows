@@ -67,22 +67,30 @@ class Workflow:
         self.workflow_debug = workflow_debug
         self.workflow_permissions = workflow_permissions
 
+    def _log_extra(self, **kwargs) -> dict:
+        return {
+            "workflow_id": self.workflow_id,
+            "workflow_execution_id": getattr(
+                self.context_manager, "workflow_execution_id", None
+            ),
+            "tenant_id": getattr(self.context_manager, "tenant_id", None),
+            **kwargs,
+        }
+
     def run_steps(self):
-        self.logger.debug(f"Running steps for workflow {self.workflow_id}")
+        self.logger.debug("Running steps for workflow", extra=self._log_extra())
         for step in self.workflow_steps:
             try:
                 threading.current_thread().step_id = step.step_id
-                self.logger.info(
-                    "Running step %s",
-                    step.step_id,
-                    extra={"step_id": step.step_id},
+                self.logger.debug(
+                    "Running step",
+                    extra=self._log_extra(step_id=step.step_id, step_name=step.name),
                 )
                 step_ran = step.run()
                 if step_ran:
-                    self.logger.info(
-                        "Step %s ran successfully",
-                        step.step_id,
-                        extra={"step_id": step.step_id},
+                    self.logger.debug(
+                        "Step ran successfully",
+                        extra=self._log_extra(step_id=step.step_id),
                     )
                     threading.current_thread().step_id = None
                 # if the step ran + the step configured to stop the workflow:
@@ -94,28 +102,29 @@ class Workflow:
                     )
                     break
             except StepError as e:
-                self.logger.error(f"Step {step.step_id} failed: {e}")
+                self.logger.error(
+                    "Step failed",
+                    exc_info=True,
+                    extra=self._log_extra(step_id=step.step_id, error=str(e)),
+                )
                 threading.current_thread().step_id = None
                 raise
-        self.logger.debug(f"Steps for workflow {self.workflow_id} ran successfully")
 
     def run_action(self, action: Step):
-        self.logger.info(
-            "Running action %s",
-            action.name,
-            extra={"step_id": action.step_id},
+        self.logger.debug(
+            "Running action",
+            extra=self._log_extra(action_name=action.name, step_id=action.step_id),
         )
         try:
             action_stop = False
             action_ran = action.run()
             action_error = None
             if action_ran:
-                self.logger.info(
-                    "Action %s ran successfully",
-                    action.name,
-                    extra={
-                        "step_id": action.step_id,
-                    },
+                self.logger.debug(
+                    "Action ran successfully",
+                    extra=self._log_extra(
+                        action_name=action.name, step_id=action.step_id
+                    ),
                 )
             if action_ran and not action.continue_to_next_step:
                 self.logger.info(
@@ -128,17 +137,17 @@ class Workflow:
                 action_stop = True
         except Exception as e:
             self.logger.error(
-                f"Action {action.name} failed: {e}",
-                extra={
-                    "step_id": action.step_id,
-                },
+                "Action failed",
+                exc_info=True,
+                extra=self._log_extra(
+                    action_name=action.name, step_id=action.step_id, error=str(e)
+                ),
             )
             action_ran = False
             action_error = f"Failed to run action {action.name}: {str(e)}"
         return action_ran, action_error, action_stop
 
     def run_actions(self):
-        self.logger.debug("Running actions")
         actions_firing = []
         actions_errors = []
         for action in self.workflow_actions:
@@ -150,21 +159,33 @@ class Workflow:
                 actions_errors.append(action_error)
             # if the action ran + the action configured to stop the workflow:
             elif action_status and action_stop:
-                self.logger.info("Action stop, stopping the workflow")
+                self.logger.info(
+                    "Action stop, stopping the workflow",
+                    extra=self._log_extra(
+                        action_name=action.name, step_id=action.step_id
+                    ),
+                )
                 break
-        self.logger.debug("Actions ran")
         return actions_firing, actions_errors
 
     def run(self, workflow_execution_id):
         if self.workflow_disabled:
-            self.logger.info(f"Skipping disabled workflow {self.workflow_id}")
+            self.logger.info(
+                "Skipping disabled workflow",
+                extra=self._log_extra(workflow_execution_id=workflow_execution_id),
+            )
             return
+        event = (
+            self.context_manager.event_context or self.context_manager.incident_context
+        )
         self.logger.info(
-            f"Running workflow {self.workflow_id}",
-            extra={
-                "event": self.context_manager.event_context
-                or self.context_manager.incident_context
-            },
+            "Running workflow",
+            extra=self._log_extra(
+                workflow_execution_id=workflow_execution_id,
+                event_id=getattr(event, "id", None),
+                fingerprint=getattr(event, "fingerprint", None),
+                trigger=getattr(event, "trigger", None),
+            ),
         )
         self.context_manager.set_execution_context(
             self.workflow_id, workflow_execution_id
@@ -173,14 +194,16 @@ class Workflow:
             self.run_steps()
         except StepError as e:
             self.logger.error(
-                f"Workflow {self.workflow_id} failed: {e}",
-                extra={
-                    "workflow_execution_id": workflow_execution_id,
-                },
+                "Workflow failed",
+                exc_info=True,
+                extra=self._log_extra(error=str(e)),
             )
             raise
         actions_firing, actions_errors = self.run_actions()
-        self.logger.info(f"Finish to run workflow {self.workflow_id}")
+        self.logger.info(
+            "Finish to run workflow",
+            extra=self._log_extra(errors_count=len(actions_errors)),
+        )
         return actions_errors
 
     @staticmethod

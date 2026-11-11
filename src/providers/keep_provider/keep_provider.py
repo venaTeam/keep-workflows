@@ -4,6 +4,7 @@ Keep Provider is a class that allows to ingest/digest data from Keep.
 
 import copy
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 from html import unescape
 
@@ -37,6 +38,13 @@ class KeepProvider(BaseProvider):
         Dispose the provider.
         """
         pass
+
+    def _log_extra(self, **kwargs) -> dict:
+        return {
+            "tenant_id": self.context_manager.tenant_id,
+            "workflow_id": self.context_manager.workflow_id,
+            **kwargs,
+        }
 
     def _calculate_time_delta(self, timerange=None, default_time_range=1):
         """Calculate time delta in days from timerange dict."""
@@ -85,14 +93,7 @@ class KeepProvider(BaseProvider):
             filter: filter to query Keep (only for version 2)
             limit: limit number of results (only for version 2)
         """
-        self.logger.info(
-            "Querying Keep for alerts",
-            extra={
-                "filters": filters,
-                "is_distinct": distinct,
-                "time_delta": time_delta,
-            },
-        )
+        start_time = time.time()
         # if timerange is provided, calculate time delta
         if timerange:
             time_delta = int(
@@ -139,11 +140,20 @@ class KeepProvider(BaseProvider):
                 )
             except Exception as e:
                 self.logger.exception(
-                    "Failed to search alerts by CEL: %s",
-                    str(e),
+                    "Failed to search alerts by CEL",
+                    extra=self._log_extra(filter=filter, error=str(e)),
                 )
                 raise
-        self.logger.info("Got alerts from Keep", extra={"num_of_alerts": len(alerts)})
+        self.logger.info(
+            "Got alerts from Keep",
+            extra=self._log_extra(
+                num_of_alerts=len(alerts),
+                filters=filters,
+                filter=filter,
+                time_delta=time_delta,
+                duration_ms=int((time.time() - start_time) * 1000),
+            ),
+        )
         return alerts
 
     def _build_alert(self, alert_data, fingerprint_fields=[], **kwargs):
@@ -200,9 +210,6 @@ class KeepProvider(BaseProvider):
         Returns:
             list of alerts that need state updates
         """
-        self.logger.info(
-            "Starting state alert handling", extra={"num_alerts": len(state_alerts)}
-        )
         alerts_to_notify = []
         search_engine = SearchEngine(tenant_id=self.context_manager.tenant_id)
         curr_alerts = search_engine.search_alerts_by_cel(
@@ -215,13 +222,6 @@ class KeepProvider(BaseProvider):
         # Create lookup by fingerprint for efficient comparison
         curr_alerts_map = {alert.fingerprint: alert for alert in curr_alerts}
         state_alerts_map = {alert.fingerprint: alert for alert in state_alerts}
-        self.logger.debug(
-            "Created alert maps",
-            extra={
-                "curr_alerts_count": len(curr_alerts_map),
-                "state_alerts_count": len(state_alerts_map),
-            },
-        )
 
         # Handle existing alerts
         for fingerprint, curr_alert in curr_alerts_map.items():
@@ -245,10 +245,10 @@ class KeepProvider(BaseProvider):
                     alerts_to_notify.append(curr_alert)
                     self.logger.info(
                         "Alert resolved",
-                        extra={
-                            "fingerprint": fingerprint,
-                            "last_received": curr_alert.last_received,
-                        },
+                        extra=self._log_extra(
+                            fingerprint=fingerprint,
+                            last_received=curr_alert.last_received,
+                        ),
                     )
 
                 # else: alert still exists, maintain FIRING state
@@ -267,10 +267,10 @@ class KeepProvider(BaseProvider):
                     alerts_to_notify.append(curr_alert)
                     self.logger.info(
                         "Pending alert resolved",
-                        extra={
-                            "fingerprint": fingerprint,
-                            "last_received": curr_alert.last_received,
-                        },
+                        extra=self._log_extra(
+                            fingerprint=fingerprint,
+                            last_received=curr_alert.last_received,
+                        ),
                     )
                 else:
                     # Check if should transition to FIRING
@@ -311,10 +311,10 @@ class KeepProvider(BaseProvider):
                         curr_alert.status = AlertStatus.FIRING
                         self.logger.info(
                             "Alert transitioned to firing",
-                            extra={
-                                "fingerprint": fingerprint,
-                                "duration_elapsed": str(now - activeAt),
-                            },
+                            extra=self._log_extra(
+                                fingerprint=fingerprint,
+                                duration_elapsed=str(now - activeAt),
+                            ),
                         )
                     # Keep pending, update last_received
                     else:
@@ -342,10 +342,10 @@ class KeepProvider(BaseProvider):
                     alerts_to_notify.append(curr_alert)
                     self.logger.info(
                         "Resolved alert back to pending",
-                        extra={
-                            "fingerprint": fingerprint,
-                            "last_received": curr_alert.last_received,
-                        },
+                        extra=self._log_extra(
+                            fingerprint=fingerprint,
+                            last_received=curr_alert.last_received,
+                        ),
                     )
 
         # Handle new alerts not in current state
@@ -357,12 +357,14 @@ class KeepProvider(BaseProvider):
                 alerts_to_notify.append(new_alert)
                 self.logger.info(
                     "New alert created",
-                    extra={"fingerprint": fingerprint, "activeAt": new_alert.activeAt},
+                    extra=self._log_extra(
+                        fingerprint=fingerprint, activeAt=new_alert.activeAt
+                    ),
                 )
 
         self.logger.info(
             "Completed state alert handling",
-            extra={"alerts_to_notify": len(alerts_to_notify)},
+            extra=self._log_extra(alerts_to_notify=len(alerts_to_notify)),
         )
         return alerts_to_notify
 
@@ -376,10 +378,6 @@ class KeepProvider(BaseProvider):
         Returns:
             list of alerts that need state updates
         """
-        self.logger.info(
-            "Starting stateless alert handling",
-            extra={"num_alerts": len(stateless_alerts)},
-        )
         alerts_to_notify = []
         if not read_only:
             search_engine = SearchEngine(tenant_id=self.context_manager.tenant_id)
@@ -395,13 +393,6 @@ class KeepProvider(BaseProvider):
         # Create lookup by fingerprint for efficient comparison
         curr_alerts_map = {alert.fingerprint: alert for alert in curr_alerts}
         state_alerts_map = {alert.fingerprint: alert for alert in stateless_alerts}
-        self.logger.debug(
-            "Created alert maps",
-            extra={
-                "curr_alerts_count": len(curr_alerts_map),
-                "state_alerts_count": len(state_alerts_map),
-            },
-        )
 
         # Handle existing alerts
         for fingerprint, curr_alert in curr_alerts_map.items():
@@ -423,10 +414,10 @@ class KeepProvider(BaseProvider):
                     alerts_to_notify.append(curr_alert)
                     self.logger.info(
                         "Alert resolved",
-                        extra={
-                            "fingerprint": fingerprint,
-                            "last_received": curr_alert.last_received,
-                        },
+                        extra=self._log_extra(
+                            fingerprint=fingerprint,
+                            last_received=curr_alert.last_received,
+                        ),
                     )
 
         # Handle new alerts not in current state
@@ -434,15 +425,14 @@ class KeepProvider(BaseProvider):
             alerts_to_notify.append(new_alert)
             self.logger.info(
                 "New alert firing",
-                extra={
-                    "fingerprint": fingerprint,
-                    "last_received": new_alert.last_received,
-                },
+                extra=self._log_extra(
+                    fingerprint=fingerprint, last_received=new_alert.last_received
+                ),
             )
 
         self.logger.info(
             "Completed stateless alert handling",
-            extra={"alerts_to_notify": len(alerts_to_notify)},
+            extra=self._log_extra(alerts_to_notify=len(alerts_to_notify)),
         )
         return alerts_to_notify
 
@@ -470,7 +460,6 @@ class KeepProvider(BaseProvider):
         Returns:
             list of created/updated alerts
         """
-        self.logger.debug("Starting _notify_alert")
         context = self.context_manager.get_full_context()
 
         alert_results = context.get("foreach", {}).get("items", None)
@@ -479,29 +468,41 @@ class KeepProvider(BaseProvider):
         if alert_results:
             self.logger.debug(
                 "Got alert results from foreach context",
-                extra={"alert_results": alert_results},
+                extra={
+                    "alert_results_type": type(alert_results).__name__,
+                    "alert_results_count": (
+                        len(alert_results) if isinstance(alert_results, list) else None
+                    ),
+                },
             )
         # else, the last step results are the alert results
         else:
             # TODO: this is a temporary solution until we have a better way to get the alert results
             alert_results = context.get("steps", {}).get("this", {}).get("results", {})
-            self.logger.info(
+            self.logger.debug(
                 "Got alert results from 'this' step",
-                extra={"alert_results": alert_results},
+                extra={
+                    "alert_results_type": type(alert_results).__name__,
+                    "alert_results_count": (
+                        len(alert_results) if isinstance(alert_results, list) else None
+                    ),
+                },
             )
             # alert_results must be a list
             if not isinstance(alert_results, list):
                 self.logger.warning(
                     "Alert results must be a list, but got a non-list type",
-                    extra={"alert_results": alert_results},
+                    extra=self._log_extra(
+                        alert_results_type=type(alert_results).__name__
+                    ),
                 )
                 alert_results = None
 
         # create_alert_in_keep.yml for example
         if not alert_results:
-            self.logger.info("No alert results found")
+            self.logger.debug("No alert results found")
             if alert:
-                self.logger.info("Creating alert from 'alert' parameter")
+                self.logger.debug("Creating alert from 'alert' parameter")
                 alert_results = [alert]
 
         self.logger.debug(
@@ -516,13 +517,12 @@ class KeepProvider(BaseProvider):
         # if we need to check if_condition, handle the condition
         trigger_alerts = []
         if if_condition:
-            self.logger.info(
+            self.logger.debug(
                 "Processing alerts with 'if' condition",
                 extra={"condition": if_condition},
             )
             # if its multialert, handle each alert separately
             if isinstance(alert_results, list):
-                self.logger.debug("Processing multiple alerts")
                 for alert_result in alert_results:
                     # render
                     if_rendered = self.io_handler.render(
@@ -547,12 +547,12 @@ class KeepProvider(BaseProvider):
                 pass
         # if no if_condition, trigger all alerts
         else:
-            self.logger.info("No 'if' condition - triggering all alerts")
+            self.logger.debug("No 'if' condition - triggering all alerts")
             trigger_alerts = alert_results
 
         # build the alert dtos
         alert_dtos = []
-        self.logger.info(
+        self.logger.debug(
             "Building alert DTOs", extra={"trigger_count": len(trigger_alerts)}
         )
         # render alert data
@@ -566,12 +566,20 @@ class KeepProvider(BaseProvider):
             else:
                 self.logger.warning(
                     "Alert data is not a dict, skipping rendering",
-                    extra={"alert_data": alert_data},
+                    extra=self._log_extra(
+                        alert_result_type=type(alert_result).__name__
+                    ),
                 )
                 rendered_alert_data = alert_data
             self.logger.debug(
                 "Rendered alert data",
-                extra={"original": alert_data, "rendered": rendered_alert_data},
+                extra={
+                    "rendered_keys": (
+                        list(rendered_alert_data.keys())
+                        if isinstance(rendered_alert_data, dict)
+                        else None
+                    )
+                },
             )
             # render tenrary expressions
             rendered_alert_data = self._handle_ternary_expressions(rendered_alert_data)
@@ -593,13 +601,13 @@ class KeepProvider(BaseProvider):
             if fingerprints.get(alert_dto.fingerprint):
                 self.logger.warning(
                     "Alert with the same fingerprint already exists - it means your fingerprint labels are not unique",
-                    extra={"alert": alert_dto, "fingerprint": alert_dto.fingerprint},
+                    extra=self._log_extra(fingerprint=alert_dto.fingerprint),
                 )
             fingerprints[alert_dto.fingerprint] = True
 
         # if for_duration is provided, handle state alerts
         if for_duration:
-            self.logger.info(
+            self.logger.debug(
                 "Handling state alerts with 'for' condition",
                 extra={"for": for_duration},
             )
@@ -607,13 +615,10 @@ class KeepProvider(BaseProvider):
             alerts = self._handle_state_alerts(for_duration, alert_dtos)
         # else, handle all alerts
         else:
-            self.logger.info("Handling stateless alerts")
+            self.logger.debug("Handling stateless alerts")
             alerts = self._handle_stateless_alerts(alert_dtos, read_only=read_only)
 
         # handle all alerts
-        self.logger.info(
-            "Processing final alerts", extra={"number_of_alerts": len(alerts)}
-        )
         process_event(
             ctx={},
             tenant_id=self.context_manager.tenant_id,
@@ -626,32 +631,46 @@ class KeepProvider(BaseProvider):
             event=alerts,
         )
         self.logger.info(
-            "Alerts processed successfully", extra={"alert_count": len(alerts)}
+            "Alerts processed successfully",
+            extra=self._log_extra(alert_count=len(alerts)),
         )
         return alerts
 
     def _delete_workflows(self, except_workflow_id=None):
-        self.logger.info("Deleting all workflows")
         workflow_store = WorkflowStore()
         workflows = workflow_store.get_all_workflows(self.context_manager.tenant_id)
         for workflow in workflows:
             if not (except_workflow_id and workflow.id == except_workflow_id):
-                self.logger.info(f"Deleting workflow {workflow.id}")
                 try:
                     workflow_store.delete_workflow(
                         self.context_manager.tenant_id, workflow.id
                     )
-                    self.logger.info(f"Deleted workflow {workflow.id}")
+                    self.logger.info(
+                        "Deleted workflow",
+                        extra={
+                            "workflow_id": workflow.id,
+                            "tenant_id": self.context_manager.tenant_id,
+                        },
+                    )
                 except Exception as e:
                     self.logger.exception(
-                        f"Failed to delete workflow {workflow.id}: {e}"
+                        "Failed to delete workflow",
+                        extra={
+                            "workflow_id": workflow.id,
+                            "tenant_id": self.context_manager.tenant_id,
+                            "error": str(e),
+                        },
                     )
                     raise ProviderException(
                         f"Failed to delete workflow {workflow.id}: {e}"
                     )
             else:
                 self.logger.info(
-                    f"Not deleting workflow {workflow.id} as it's current workflow"
+                    "Not deleting workflow as it's current workflow",
+                    extra={
+                        "workflow_id": workflow.id,
+                        "tenant_id": self.context_manager.tenant_id,
+                    },
                 )
         self.logger.info("Deleted all workflows")
 
@@ -701,11 +720,12 @@ class KeepProvider(BaseProvider):
             else:
                 self.logger.info(
                     "Not deleting workflow as it's a test run",
+                    extra=self._log_extra(),
                 )
         if workflow_to_update_yaml:
             self.logger.info(
                 "Updating workflow YAML",
-                extra={"workflow_to_update_yaml": workflow_to_update_yaml},
+                extra=self._log_extra(),
             )
             workflowstore = WorkflowStore()
             # Create the workflow
@@ -726,10 +746,10 @@ class KeepProvider(BaseProvider):
                 )
                 self.logger.info(
                     "Workflow created successfully",
-                    extra={
-                        "tenant_id": self.context_manager.tenant_id,
-                        "workflow": workflow,
-                    },
+                    extra=self._log_extra(
+                        created_workflow_id=workflow.id,
+                        workflow_name=workflow.name,
+                    ),
                 )
             except Exception as e:
                 self.logger.exception(
@@ -741,7 +761,6 @@ class KeepProvider(BaseProvider):
                 )
                 raise ProviderException(f"Failed to create workflow: {e}")
         elif not is_workflow_action:
-            self.logger.info("Notifying Alerts")
             # for backward compatibility
             if_condition = if_ or kwargs.get("if", None)
             for_duration = for_ or kwargs.get("for", None)
@@ -754,7 +773,10 @@ class KeepProvider(BaseProvider):
                 read_only=read_only,
                 fingerprint=fingerprint,
             )
-            self.logger.info("Alerts notified")
+            self.logger.info(
+                "Alerts notified",
+                extra=self._log_extra(alert_count=len(alerts) if alerts else 0),
+            )
             return alerts
 
     def validate_config(self):
@@ -784,11 +806,12 @@ class KeepProvider(BaseProvider):
         # if the evaluation failed, raise an exception
         if aeval.error_msg:
             self.logger.error(
-                f"Failed to evaluate if condition, you probably used a variable that doesn't exist. Condition: {if_conf}, Rendered: {if_conf_rendered}, Error: {aeval.error_msg}",
-                extra={
-                    "condition": if_conf,
-                    "rendered": if_conf_rendered,
-                },
+                "Failed to evaluate if condition, you probably used a variable that doesn't exist.",
+                extra=self._log_extra(
+                    condition=if_conf,
+                    rendered=if_conf_rendered,
+                    error=aeval.error_msg,
+                ),
             )
             return False
         return evaluated_if_met
@@ -858,8 +881,8 @@ class KeepProvider(BaseProvider):
             if colon_pos == -1:
                 # Malformed ternary expression
                 self.logger.warning(
-                    f"Malformed ternary expression: {expression}",
-                    extra={"expression": expression},
+                    "Malformed ternary expression",
+                    extra=self._log_extra(expression=expression),
                 )
                 return expression
 
@@ -891,15 +914,15 @@ class KeepProvider(BaseProvider):
                     # If there were errors during evaluation, log them but keep the original value
                     if aeval.error_msg:
                         self.logger.warning(
-                            f"Error evaluating ternary expression: {value}. Error: {aeval.error_msg}",
-                            extra={"value": value, "error": aeval.error_msg},
+                            "Error evaluating ternary expression",
+                            extra=self._log_extra(value=value, error=aeval.error_msg),
                         )
                     else:
                         rendered_providers_parameters[key] = result
                 except Exception as e:
                     self.logger.warning(
-                        f"Failed to evaluate potential ternary expression: {value}. Error: {str(e)}",
-                        extra={"value": value, "error": str(e)},
+                        "Failed to evaluate potential ternary expression",
+                        extra=self._log_extra(value=value, error=str(e)),
                     )
 
         return rendered_providers_parameters

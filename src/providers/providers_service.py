@@ -58,7 +58,6 @@ class ProvidersService:
     def validate_scopes(
         provider: BaseProvider, validate_mandatory=True
     ) -> dict[str, bool | str]:
-        logger.info("Validating provider scopes")
         try:
             validated_scopes = provider.validate_scopes()
         except Exception as e:
@@ -137,7 +136,6 @@ class ProvidersService:
             secret_manager.delete_secret(
                 secret_name=secret_name,
             )
-            logger.warning("Secret deleted")
         except Exception:
             logger.exception("Failed to delete the secret")
             pass
@@ -227,7 +225,6 @@ class ProvidersService:
                     secret_manager.delete_secret(
                         secret_name=secret_name,
                     )
-                    logger.warning("Secret deleted")
                 except Exception:
                     logger.exception("Failed to delete the secret")
                     pass
@@ -361,9 +358,13 @@ class ProvidersService:
                 )
                 provider.clean_up()
             except NotImplementedError:
-                logger.info(
-                    "Being deleted provider of type %s does not have a clean_up method",
-                    provider_model.type,
+                logger.debug(
+                    "Being deleted provider does not have a clean_up method",
+                    extra={
+                        "provider_id": provider_model.id,
+                        "provider_type": provider_model.type,
+                        "tenant_id": tenant_id,
+                    },
                 )
             except Exception:
                 logger.exception(msg="Provider deleted but failed to clean up provider")
@@ -496,13 +497,15 @@ class ProvidersService:
             if provisioned_providers:
                 logger.info("Found existing provisioned providers, deleting them")
                 for provider in provisioned_providers:
-                    logger.info(f"Deprovisioning provider {provider.id}")
                     ProvidersService.delete_provider(
                         tenant_id=tenant_id,
                         provider_id=provider.id,
                         allow_provisioned=True,
                     )
-                    logger.info(f"Provider {provider.id} deprovisioned successfully")
+                    logger.info(
+                        "Provider deprovisioned successfully",
+                        extra={"provider_id": provider.id, "tenant_id": tenant_id},
+                    )
 
             return []
 
@@ -535,11 +538,18 @@ class ProvidersService:
             for provider in provisioned_providers:
                 if provider.name not in env_providers:
                     try:
-                        logger.info(f"Deleting provider {provider.name}")
                         ProvidersService.delete_provider(
                             tenant_id=tenant_id,
                             provider_id=provider.id,
                             allow_provisioned=True,
+                        )
+                        logger.info(
+                            "Provider deprovisioned successfully",
+                            extra={
+                                "provider_name": provider.name,
+                                "provider_id": provider.id,
+                                "tenant_id": tenant_id,
+                            },
                         )
                     except Exception as e:
                         logger.exception(
@@ -556,10 +566,10 @@ class ProvidersService:
                 install_webhook = provider_config.get(
                     "install_webhook", install_webhook_env
                 )
-                logger.info(f"Provisioning provider {provider_name}")
                 if ProvidersService.is_provider_installed(tenant_id, provider_name):
                     logger.info(
-                        f"Provider {provider_name} already installed. Updating it"
+                        "Provider already installed. Updating it",
+                        extra={"provider_name": provider_name, "tenant_id": tenant_id},
                     )
                     installed_provider = get_provider_by_name(
                         tenant_id=tenant_id, provider_name=provider_name
@@ -573,7 +583,6 @@ class ProvidersService:
                     )
                     continue
 
-                logger.info(f"Installing provider {provider_name}")
                 try:
                     installed_provider = ProvidersService.install_provider(
                         tenant_id=tenant_id,
@@ -592,7 +601,13 @@ class ProvidersService:
                                 provider_type=installed_provider["type"],
                                 provider_id=installed_provider["id"],
                             )
-                            logger.info(f"Webhook installed for {provider_name}")
+                            logger.info(
+                                "Webhook installed for provider",
+                                extra={
+                                    "provider_name": provider_name,
+                                    "tenant_id": tenant_id,
+                                },
+                            )
                         except Exception as e:
                             logger.error(
                                 "Error installing webhook for provider from env var",
@@ -600,9 +615,16 @@ class ProvidersService:
                             )
                     else:
                         logger.info(
-                            f"Install webhook disabled for {provider_name}; skipping."
+                            "Install webhook disabled for provider; skipping.",
+                            extra={
+                                "provider_name": provider_name,
+                                "tenant_id": tenant_id,
+                            },
                         )
-                    logger.info(f"Provider {provider_name} provisioned successfully")
+                    logger.info(
+                        "Provider provisioned successfully",
+                        extra={"provider_name": provider_name, "tenant_id": tenant_id},
+                    )
                 except Exception as e:
                     logger.error(
                         "Error provisioning provider from env var",
@@ -614,7 +636,6 @@ class ProvidersService:
             installed_providers = []
             for file in os.listdir(provisioned_providers_dir):
                 if file.endswith((".yaml", ".yml")):
-                    logger.info(f"Provisioning provider from {file}")
                     provider_path = os.path.join(provisioned_providers_dir, file)
 
                     try:
@@ -639,7 +660,11 @@ class ProvidersService:
                                 tenant_id, provider_name
                             ):
                                 logger.info(
-                                    f"Provider {provider_name} already installed. Updating it"
+                                    "Provider already installed. Updating it",
+                                    extra={
+                                        "provider_name": provider_name,
+                                        "tenant_id": tenant_id,
+                                    },
                                 )
                                 # Add to installed providers list. This is necessary, otherwise the provider
                                 # will be un-provisioned on the process un-provisioning outdated providers.
@@ -657,7 +682,6 @@ class ProvidersService:
                                 )
                                 continue
 
-                            logger.info(f"Installing provider {provider_name}")
                             installed_provider = ProvidersService.install_provider(
                                 tenant_id=tenant_id,
                                 installed_by="system",
@@ -676,7 +700,11 @@ class ProvidersService:
                                         provider_id=installed_provider["id"],
                                     )
                                     logger.info(
-                                        f"Webhook installed for {provider_name}"
+                                        "Webhook installed for provider",
+                                        extra={
+                                            "provider_name": provider_name,
+                                            "tenant_id": tenant_id,
+                                        },
                                     )
                                 except Exception as e:
                                     logger.error(
@@ -688,10 +716,19 @@ class ProvidersService:
                                     )
                             else:
                                 logger.info(
-                                    f"Install webhook disabled for {provider_name}; skipping."
+                                    "Install webhook disabled for provider; skipping.",
+                                    extra={
+                                        "provider_name": provider_name,
+                                        "tenant_id": tenant_id,
+                                    },
                                 )
                             logger.info(
-                                f"Provider {provider_name} provisioned successfully"
+                                "Provider provisioned successfully",
+                                extra={
+                                    "provider_name": provider_name,
+                                    "file": file,
+                                    "tenant_id": tenant_id,
+                                },
                             )
                             installed_providers.append(provider_name)
 
@@ -701,7 +738,12 @@ class ProvidersService:
                             )
                             if deduplication_rules:
                                 logger.info(
-                                    f"Provisioning deduplication rules for provider {provider_name}"
+                                    "Provisioning deduplication rules for provider",
+                                    extra={
+                                        "provider_name": provider_name,
+                                        "rules_count": len(deduplication_rules),
+                                        "tenant_id": tenant_id,
+                                    },
                                 )
 
                                 deduplication_rules_dict: dict[str, dict] = {}
@@ -709,8 +751,12 @@ class ProvidersService:
                                     rule_name,
                                     rule_config,
                                 ) in deduplication_rules.items():
-                                    logger.info(
-                                        f"Provisioning deduplication rule {rule_name}"
+                                    logger.debug(
+                                        "Provisioning deduplication rule",
+                                        extra={
+                                            "rule_name": rule_name,
+                                            "provider_name": provider_name,
+                                        },
                                     )
                                     rule_config["name"] = rule_name
                                     rule_config["provider_name"] = provider_name
@@ -731,15 +777,20 @@ class ProvidersService:
             # Un-provisioning other providers.
             for provider in provisioned_providers:
                 if provider.name not in installed_providers:
-                    logger.info(
-                        f"Deprovisioning provider {provider.name} as its file no longer exists or is outside the providers directory"
-                    )
                     ProvidersService.delete_provider(
                         tenant_id=tenant_id,
                         provider_id=provider.id,
                         allow_provisioned=True,
                     )
-                    logger.info(f"Provider {provider.name} deprovisioned successfully")
+                    logger.info(
+                        "Provider deprovisioned successfully",
+                        extra={
+                            "provider_name": provider.name,
+                            "provider_id": provider.id,
+                            "tenant_id": tenant_id,
+                            "reason": "file no longer exists or is outside the providers directory",
+                        },
+                    )
 
     @staticmethod
     def get_provider_logs(

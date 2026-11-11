@@ -86,8 +86,8 @@ requests.Session.request = no_redirect_request
 async def check_pending_tasks(background_tasks: set):
     while True:
         events_in_queue = len(background_tasks)
-        logger.info(
-            f"{events_in_queue} background tasks pending",
+        logger.debug(
+            "Background tasks pending",
             extra={
                 "pending_tasks": events_in_queue,
             },
@@ -280,8 +280,14 @@ def get_app(
 
     @app.exception_handler(Exception)
     async def catch_exception(request: Request, exc: Exception):
-        logging.error(
-            f"An unhandled exception occurred: {exc}, Trace ID: {request.state.trace_id}. Tenant ID: {request.state.tenant_id}"
+        logger.error(
+            "An unhandled exception occurred",
+            exc_info=exc,
+            extra={
+                "error": str(exc),
+                "trace_id": getattr(request.state, "trace_id", None),
+                "tenant_id": getattr(request.state, "tenant_id", None),
+            },
         )
         return JSONResponse(
             status_code=500,
@@ -309,7 +315,6 @@ def get_app(
     return app
 
 
-logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 

@@ -120,10 +120,16 @@ class BaseProvider(metaclass=abc.ABCMeta):
         )
 
         self.validate_config()
-        self.logger.debug(
-            "Base provider initialized", extra={"provider": self.__class__.__name__}
-        )
         self.provider_type = self._extract_type()
+        self.logger.debug(
+            "Base provider initialized",
+            extra={
+                "provider": self.__class__.__name__,
+                "tenant_id": getattr(context_manager, "tenant_id", None),
+                "provider_id": self.provider_id,
+                "provider_type": self.provider_type,
+            },
+        )
         self.results = []
         # tb: we can have this overriden by customer configuration, when initializing the provider
         self.fingerprint_fields = self.FINGERPRINT_FIELDS
@@ -201,7 +207,11 @@ class BaseProvider(metaclass=abc.ABCMeta):
         Enrich alert with provider specific data.
 
         """
-        self.logger.debug("Extracting the fingerprint from the alert")
+        log_extra = {
+            "provider": self.provider_id,
+            "tenant_id": self.context_manager.tenant_id,
+            "workflow_id": self.context_manager.workflow_id,
+        }
         event = None
         entity_type: Literal["alert", "incident"] = "alert"
         if "fingerprint" in results:
@@ -226,7 +236,7 @@ class BaseProvider(metaclass=abc.ABCMeta):
             else:
                 self.logger.warning(
                     "No fingerprint found for alert enrichment",
-                    extra={"provider": self.provider_id},
+                    extra=log_extra,
                 )
                 fingerprint = None
         # else, if we are in an event context, use the event fingerprint
@@ -248,10 +258,12 @@ class BaseProvider(metaclass=abc.ABCMeta):
         if not fingerprint:
             self.logger.error(
                 "No fingerprint found for alert enrichment",
-                extra={"provider": self.provider_id},
+                extra=log_extra,
             )
             raise Exception("No fingerprint found for alert enrichment")
-        self.logger.debug("Fingerprint extracted", extra={"fingerprint": fingerprint})
+        self.logger.debug(
+            "Fingerprint extracted", extra={"fingerprint": fingerprint, **log_extra}
+        )
 
         _enrichments = {}
         disposable_enrichments = {}
@@ -271,7 +283,9 @@ class BaseProvider(metaclass=abc.ABCMeta):
                 # 1. first convert to results[0][0]["message"]["source"]
                 # 2. use eval
                 elif value.startswith("results["):
-                    self.logger.info("Trying to convert")
+                    self.logger.debug(
+                        "Trying to convert", extra={"value": value[:200], **log_extra}
+                    )
 
                     # try convert
                     def convert_dot_to_bracket(match):
@@ -289,7 +303,12 @@ class BaseProvider(metaclass=abc.ABCMeta):
                         )
                     except Exception:
                         self.logger.exception(
-                            "Could not parse results", extra={"value": value}
+                            "Could not parse results",
+                            extra={
+                                "value": value,
+                                "fingerprint": fingerprint,
+                                **log_extra,
+                            },
                         )
 
                 if disposable:
@@ -303,11 +322,14 @@ class BaseProvider(metaclass=abc.ABCMeta):
                         setattr(event, enrichment["key"], value)
             except Exception:
                 self.logger.error(
-                    f"Failed to enrich alert - enrichment: {enrichment}",
-                    extra={"fingerprint": fingerprint, "provider": self.provider_id},
+                    "Failed to enrich alert",
+                    extra={
+                        "enrichment": enrichment,
+                        "fingerprint": fingerprint,
+                        **log_extra,
+                    },
                 )
                 continue
-        self.logger.info("Enriching alert", extra={"fingerprint": fingerprint})
         try:
             enrichments_bl = EnrichmentsBl(self.context_manager.tenant_id)
             enrichment_string = ", ".join(
@@ -363,12 +385,17 @@ class BaseProvider(metaclass=abc.ABCMeta):
 
         except Exception as e:
             self.logger.error(
-                f"Failed to enrich {entity_type} in db",
-                extra={"fingerprint": fingerprint, "provider": self.provider_id},
+                "Failed to enrich entity in db",
+                extra={
+                    "entity_type": entity_type,
+                    "fingerprint": fingerprint,
+                    **log_extra,
+                },
             )
             raise e
         self.logger.info(
-            f"{entity_type.capitalize()} enriched", extra={"fingerprint": fingerprint}
+            "Entity enriched",
+            extra={"entity_type": entity_type, "fingerprint": fingerprint, **log_extra},
         )
 
     def _notify(self, **kwargs):
@@ -463,14 +490,17 @@ class BaseProvider(metaclass=abc.ABCMeta):
                         "provider_type": provider_type,
                     },
                 )
-        logger.debug("Formatting alert")
         formatted_alert = cls._format_alert(event, provider_instance)
         if formatted_alert is None:
             logger.debug(
-                "Provider returned None, which means it decided not to format the alert"
+                "Provider returned None, which means it decided not to format the alert",
+                extra={
+                    "tenant_id": tenant_id,
+                    "provider_id": provider_id,
+                    "provider_type": provider_type,
+                },
             )
             return None
-        logger.debug("Alert formatted")
         # after the provider calculated the default fingerprint
         #   check if there is a custom deduplication rule and apply
         custom_deduplication_rule = get_custom_deduplication_rule(
@@ -495,7 +525,7 @@ class BaseProvider(metaclass=abc.ABCMeta):
         # if there is a custom deduplication rule, apply it
         # apply the custom deduplication rule to calculate the fingerprint
         for alert in formatted_alert:
-            logger.info(
+            logger.debug(
                 "Applying custom deduplication rule",
                 extra={
                     "tenant_id": tenant_id,
@@ -793,7 +823,11 @@ class BaseProvider(metaclass=abc.ABCMeta):
         if not isinstance(alert_data, dict):
             self.logger.warning(
                 "We currently support only alert represented as a dict, dismissing alert",
-                extra={"alert": alert},
+                extra={
+                    "tenant_id": self.context_manager.tenant_id,
+                    "provider_id": self.provider_id,
+                    "alert_type": type(alert_data).__name__,
+                },
             )
             return
         # now try to build the alert model
@@ -835,10 +869,25 @@ class BaseProvider(metaclass=abc.ABCMeta):
         )
         try:
             response.raise_for_status()
-            self.logger.info("Alert pushed successfully")
+            self.logger.info(
+                "Alert pushed successfully",
+                extra={
+                    "tenant_id": self.context_manager.tenant_id,
+                    "provider_id": self.provider_id,
+                    "alert_fingerprint": alert_model.fingerprint,
+                    "status_code": response.status_code,
+                },
+            )
         except Exception:
             self.logger.error(
-                f"Failed to push alert to {self.provider_id}: {response.content}"
+                "Failed to push alert",
+                extra={
+                    "tenant_id": self.context_manager.tenant_id,
+                    "provider_id": self.provider_id,
+                    "alert_fingerprint": alert_model.fingerprint,
+                    "status_code": response.status_code,
+                    "response": response.text[:500],
+                },
             )
 
     @classmethod

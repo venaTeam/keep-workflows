@@ -86,7 +86,7 @@ class MaintenanceWindowsBl:
             )
             return []
 
-        self.logger.info("Checking maintenance window for alert", extra=extra)
+        self.logger.debug("Checking maintenance window for alert", extra=extra)
         env = celpy.Environment()
         now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
 
@@ -114,7 +114,7 @@ class MaintenanceWindowsBl:
         hide_rules = [rule for rule in matched if not rule.suppress]
         applied = hide_rules or matched
         if not applied:
-            self.logger.info("Alert is not in maintenance window", extra=extra)
+            self.logger.debug("Alert is not in maintenance window", extra=extra)
             return []
 
         for maintenance_rule in applied:
@@ -199,19 +199,21 @@ class MaintenanceWindowsBl:
             error_msg = str(e).lower()
             if "no such member" in error_msg or "undeclared reference" in error_msg:
                 logger.debug(
-                    f"Skipping maintenance window rule due to missing field: {str(e)}",
+                    "Skipping maintenance window rule due to missing field",
                     extra={
                         **logger_extra_info,
                         "maintenance_rule_id": maintenance_window.id,
+                        "error": str(e),
                     },
                 )
                 return False
             # Log unexpected CEL errors but don't fail the entire event processing
             logger.error(
-                f"Unexpected CEL evaluation error: {str(e)}",
+                "Unexpected CEL evaluation error",
                 extra={
                     **logger_extra_info,
                     "maintenance_rule_id": maintenance_window.id,
+                    "error": str(e),
                 },
             )
             return False
@@ -261,7 +263,6 @@ class MaintenanceWindowsBl:
             logger (logging.Logger): The logger to use.
             session (Session | None): The SQLAlchemy session to use. If None, a new session will be created.
         """
-        logger.info("Starting recover strategy for maintenance windows review.")
         env = celpy.Environment()
         windows = get_maintenance_windows_started(session)
         alerts_in_maint = get_alerts_by_status(AlertStatus.MAINTENANCE, session)
@@ -282,10 +283,13 @@ class MaintenanceWindowsBl:
                     > datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
                     and is_enable
                 ):
-                    logger.info(
-                        "Checking alert %s in maintenance window %s",
-                        alert.id,
-                        window.id,
+                    logger.debug(
+                        "Checking alert in maintenance window",
+                        extra={
+                            "tenant_id": alert.tenant_id,
+                            "alert_id": alert.id,
+                            "maintenance_rule_id": window.id,
+                        },
                     )
                     is_in_cel = MaintenanceWindowsBl.evaluate_cel(
                         window,
@@ -300,10 +304,13 @@ class MaintenanceWindowsBl:
                     if is_in_cel:
                         active = True
                         set_maintenance_windows_trace(alert, window, session)
-                        logger.info(
-                            "Alert %s is blocked due to the maintenance window: %s.",
-                            alert.id,
-                            window.id,
+                        logger.debug(
+                            "Alert is blocked due to the maintenance window",
+                            extra={
+                                "tenant_id": alert.tenant_id,
+                                "alert_id": alert.id,
+                                "maintenance_rule_id": window.id,
+                            },
                         )
                         break
             if not active:
@@ -325,7 +332,7 @@ class MaintenanceWindowsBl:
             alert = get_alert_by_event_id(tenant, str(last_alert.alert_id), session)
             if not getattr(alert, "previous_status", None):
                 logger.info(
-                    f"Alert {alert.id} does not have previous status, cannot proceed with recover strategy",
+                    "Alert does not have previous status, cannot proceed with recover strategy",
                     extra={
                         "tenant_id": tenant,
                         "fingerprint": fp,
@@ -344,9 +351,7 @@ class MaintenanceWindowsBl:
                     # TODO: this should publish event
                     workflow_manager = WorkflowManager.get_instance()
                     # insert the events to the workflow manager process queue
-                    logger.info("Adding event to the workflow manager queue")
                     workflow_manager.insert_events(tenant, [alert_dto])
-                    logger.info("Added event to the workflow manager queue")
                 except Exception:
                     logger.exception(
                         "Failed to run workflows based on alerts",
@@ -375,4 +380,4 @@ class MaintenanceWindowsBl:
                             },
                         )
                     _notify_recovered(tenant, incidents, get_notification_cache(), logger)
-        logger.info("Finished recover strategy for maintenance windows review.")
+        logger.debug("Finished recover strategy for maintenance windows review.")
