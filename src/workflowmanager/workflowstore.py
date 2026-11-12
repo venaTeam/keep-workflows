@@ -77,7 +77,6 @@ class WorkflowStore:
         lookup_by_name: bool = False,
     ):
         workflow_id = workflow.get("id")
-        self.logger.info(f"Creating workflow {workflow_id}")
         interval = self.parser.parse_interval(workflow)
         if not workflow.get("name"):  # workflow name is None or empty string
             workflow_name = workflow_id
@@ -99,12 +98,20 @@ class WorkflowStore:
             lookup_by_name=lookup_by_name,
         )
         self.logger.info(
-            f"Workflow {workflow_db.id}, {workflow_db.revision} created successfully"
+            "Workflow created successfully",
+            extra={
+                "workflow_id": workflow_db.id,
+                "revision": workflow_db.revision,
+                "tenant_id": tenant_id,
+            },
         )
         return workflow_db
 
     def delete_workflow(self, tenant_id, workflow_id):
-        self.logger.info(f"Deleting workflow {workflow_id}")
+        self.logger.info(
+            "Deleting workflow",
+            extra={"workflow_id": workflow_id, "tenant_id": tenant_id},
+        )
         workflow = get_workflow_by_id(tenant_id, workflow_id)
         if not workflow:
             raise HTTPException(
@@ -115,7 +122,14 @@ class WorkflowStore:
         try:
             delete_workflow(tenant_id, workflow_id)
         except Exception as e:
-            self.logger.exception(f"Error deleting workflow {workflow_id}: {str(e)}")
+            self.logger.exception(
+                "Error deleting workflow",
+                extra={
+                    "workflow_id": workflow_id,
+                    "tenant_id": tenant_id,
+                    "error": str(e),
+                },
+            )
             raise HTTPException(
                 status_code=500, detail=f"Failed to delete workflow {workflow_id}"
             )
@@ -279,7 +293,6 @@ class WorkflowStore:
         workflows = []
         for file in os.listdir(workflows_dir):
             if file.endswith(".yaml") or file.endswith(".yml"):
-                self.logger.info(f"Getting workflows from {file}")
                 parsed_workflow_yaml = self._parse_workflow_to_dict(
                     os.path.join(workflows_dir, file)
                 )
@@ -292,11 +305,14 @@ class WorkflowStore:
                             actions_file,
                         )
                     )
-                    self.logger.info(f"Workflow from {file} fetched successfully")
+                    self.logger.debug(
+                        "Workflow fetched successfully", extra={"file": file}
+                    )
                 except Exception as e:
                     print(e)
                     self.logger.error(
-                        f"Error parsing workflow from {file}", extra={"exception": e}
+                        "Error parsing workflow from file",
+                        extra={"file": file, "exception": e},
                     )
         return workflows
 
@@ -358,9 +374,11 @@ class WorkflowStore:
         provisioned_workflow_yaml = os.environ.get("KEEP_WORKFLOW")
 
         # Get all existing provisioned workflows
-        logger.info("Getting all already provisioned workflows")
         provisioned_workflows = get_all_provisioned_workflows(tenant_id)
-        logger.info(f"Found {len(provisioned_workflows)} provisioned workflows")
+        logger.info(
+            "Found provisioned workflows",
+            extra={"tenant_id": tenant_id, "count": len(provisioned_workflows)},
+        )
 
         if not (provisioned_workflows_dir or provisioned_workflow_yaml):
             logger.info("No workflows for provisioning found")
@@ -368,9 +386,11 @@ class WorkflowStore:
             if provisioned_workflows:
                 logger.info("Found existing provisioned workflows, deleting them")
                 for workflow in provisioned_workflows:
-                    logger.info(f"Deprovisioning workflow {workflow.id}")
                     delete_workflow(tenant_id, workflow.id)
-                    logger.info(f"Workflow {workflow.id} deprovisioned successfully")
+                    logger.info(
+                        "Workflow deprovisioned successfully",
+                        extra={"workflow_id": workflow.id, "tenant_id": tenant_id},
+                    )
             return []
 
         if (
@@ -410,26 +430,23 @@ class WorkflowStore:
                         not pre_parsed_workflow
                         or not workflow.name == pre_parsed_workflow.name
                     ):
-                        if not pre_parsed_workflow:
-                            logger.info(
-                                f"Deprovisioning workflow {workflow.id} as no workflows to provision"
-                            )
-                        else:
-                            logger.info(
-                                f"Deprovisioning workflow {workflow.id} as its id doesn't match the provisioned workflow provided in the env"
-                            )
                         delete_workflow(tenant_id, workflow.id)
                         logger.info(
-                            f"Workflow {workflow.id} deprovisioned successfully"
+                            "Workflow deprovisioned successfully",
+                            extra={
+                                "workflow_id": workflow.id,
+                                "tenant_id": tenant_id,
+                                "reason": (
+                                    "no workflows to provision"
+                                    if not pre_parsed_workflow
+                                    else "name doesn't match the env workflow"
+                                ),
+                            },
                         )
 
                 if not pre_parsed_workflow:
                     logger.info("No workflows to provision")
                     return []
-
-                logger.info(
-                    f"Provisioning workflow {pre_parsed_workflow.id} from env var"
-                )
 
                 add_or_update_workflow(
                     id=pre_parsed_workflow.id,
@@ -445,7 +462,10 @@ class WorkflowStore:
                     provisioned_file=None,
                 )
                 provisioned_workflows.append(workflow_yaml)
-                logger.info("Workflow provisioned successfully")
+                logger.info(
+                    "Workflow provisioned successfully",
+                    extra={"workflow_id": pre_parsed_workflow.id, "tenant_id": tenant_id},
+                )
             except Exception as e:
                 logger.error(
                     "Error provisioning workflow from env var",
@@ -455,7 +475,8 @@ class WorkflowStore:
         ### Provisioning from the directory
         if provisioned_workflows_dir is not None:
             logger.info(
-                f"Provisioning workflows from directory {provisioned_workflows_dir}"
+                "Provisioning workflows from directory",
+                extra={"directory": provisioned_workflows_dir, "tenant_id": tenant_id},
             )
 
             # Check for workflows that are no longer in the directory or outside the workflows_dir and delete them
@@ -469,18 +490,21 @@ class WorkflowStore:
                         )
                     )
                 ):
-                    logger.info(
-                        f"Deprovisioning workflow {workflow.id} as its file no longer exists or is outside the workflows directory"
-                    )
                     delete_workflow_by_provisioned_file(
                         tenant_id, workflow.provisioned_file
                     )
-                    logger.info(f"Workflow {workflow.id} deprovisioned successfully")
+                    logger.info(
+                        "Workflow deprovisioned successfully",
+                        extra={
+                            "workflow_id": workflow.id,
+                            "tenant_id": tenant_id,
+                            "reason": "file no longer exists or is outside the workflows directory",
+                        },
+                    )
 
             # Provision new workflows from the directory
             for file in os.listdir(provisioned_workflows_dir):
                 if file.endswith((".yaml", ".yml")):
-                    logger.info(f"Provisioning workflow from {file}")
                     workflow_path = os.path.join(provisioned_workflows_dir, file)
 
                     try:
@@ -503,14 +527,23 @@ class WorkflowStore:
                             provisioned_file=workflow_path,
                         )
                         provisioned_workflows.append(workflow_yaml)
-                        logger.info(f"Workflow from {file} provisioned successfully")
+                        logger.info(
+                            "Workflow provisioned successfully",
+                            extra={
+                                "workflow_id": pre_parsed_workflow.id,
+                                "file": file,
+                                "tenant_id": tenant_id,
+                            },
+                        )
                     except Exception as e:
                         logger.error(
-                            f"Error provisioning workflow from {file}",
-                            extra={"exception": e},
+                            "Error provisioning workflow from file",
+                            extra={"file": file, "tenant_id": tenant_id, "exception": e},
                         )
                 else:
-                    logger.info(f"Skipping file {file} as it is not a YAML file")
+                    logger.debug(
+                        "Skipping file as it is not a YAML file", extra={"file": file}
+                    )
 
         return provisioned_workflows
 
@@ -531,7 +564,7 @@ class WorkflowStore:
         try:
             workflow = cyaml.safe_load(stream)
         except cyaml.YAMLError as e:
-            self.logger.error(f"Error parsing workflow: {e}")
+            self.logger.error("Error parsing workflow", extra={"error": str(e)})
             raise e
         return workflow
 
@@ -573,10 +606,11 @@ class WorkflowStore:
                     workflows.append(workflow_yaml)
                     count += 1
 
-                self.logger.info(f"Workflow from {file} fetched successfully")
+                self.logger.debug("Workflow fetched successfully", extra={"file": file})
             except Exception as e:
                 self.logger.error(
-                    f"Error parsing or fetching workflow from {file}: {e}"
+                    "Error parsing or fetching workflow from file",
+                    extra={"file": file, "tenant_id": tenant_id, "error": str(e)},
                 )
         return workflows
 
@@ -635,10 +669,11 @@ class WorkflowStore:
                     if relevant:
                         workflows.append(workflow_yaml)
 
-                self.logger.info(f"Workflow from {file} fetched successfully")
+                self.logger.debug("Workflow fetched successfully", extra={"file": file})
             except Exception as e:
                 self.logger.error(
-                    f"Error parsing or fetching workflow from {file}: {e}"
+                    "Error parsing or fetching workflow from file",
+                    extra={"file": file, "tenant_id": tenant_id, "error": str(e)},
                 )
 
         return workflows[query.offset : query.offset + query.limit], len(workflows)
@@ -660,7 +695,10 @@ class WorkflowStore:
         try:
             workflow_raw_data = workflow.workflow_raw
             if not isinstance(workflow_raw_data, str):
-                self.logger.error(f"workflow_raw is not a string workflow: {workflow}")
+                self.logger.error(
+                    "workflow_raw is not a string workflow",
+                    extra={"workflow_id": workflow.id, "tenant_id": tenant_id},
+                )
                 return providers_dto, triggers
 
             # Parse the workflow YAML safely
@@ -669,14 +707,20 @@ class WorkflowStore:
                 workflow_yaml_dict = workflow_yaml_dict.get("workflow")
             if not workflow_yaml_dict:
                 self.logger.error(
-                    f"Parsed workflow_yaml is empty or invalid: {workflow_yaml_dict}"
+                    "Parsed workflow_yaml is empty or invalid",
+                    extra={"workflow_id": workflow.id, "tenant_id": tenant_id},
                 )
                 return providers_dto, triggers
 
         except Exception as e:
             # Improved logging to capture more details about the error
             self.logger.error(
-                f"Failed to parse workflow in get_workflow_meta_data: {e}, workflow: {workflow}"
+                "Failed to parse workflow in get_workflow_meta_data",
+                extra={
+                    "workflow_id": workflow.id,
+                    "tenant_id": tenant_id,
+                    "error": str(e),
+                },
             )
             return (
                 providers_dto,
@@ -687,7 +731,12 @@ class WorkflowStore:
             providers = self.parser.get_providers_from_workflow_dict(workflow_yaml_dict)
         except Exception as e:
             self.logger.error(
-                f"Failed to get providerts from workflow: {e}, workflow: {workflow}"
+                "Failed to get providerts from workflow",
+                extra={
+                    "workflow_id": workflow.id,
+                    "tenant_id": tenant_id,
+                    "error": str(e),
+                },
             )
             providers = []
 
@@ -714,7 +763,12 @@ class WorkflowStore:
                     )
                 except ModuleNotFoundError:
                     self.logger.warning(
-                        f"Non-existing provider in workflow: {provider.get('type')}"
+                        "Non-existing provider in workflow",
+                        extra={
+                            "provider_type": provider.get("type"),
+                            "workflow_id": workflow.id,
+                            "tenant_id": tenant_id,
+                        },
                     )
                     conf = None
 

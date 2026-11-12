@@ -86,8 +86,8 @@ class WorkflowManager:
                 return pattern.findall(value)
             except Exception as e:
                 self.logger.error(
-                    f"Error applying regex filter: {filter_val} on value: {value}",
-                    extra={"exception": e},
+                    "Error applying regex filter",
+                    extra={"exception": e, "filter": filter_val, "value": value},
                 )
                 return False
         else:
@@ -99,10 +99,7 @@ class WorkflowManager:
     def _get_workflow_from_store(self, tenant_id, workflow_model):
         try:
             # get the actual workflow that can be triggered
-            self.logger.info("Getting workflow from store")
-            workflow = self.workflow_store.get_workflow(tenant_id, workflow_model.id)
-            self.logger.info("Got workflow from store")
-            return workflow
+            return self.workflow_store.get_workflow(tenant_id, workflow_model.id)
         except ProviderConfigurationException:
             self.logger.warning(
                 "Workflow have a provider that is not configured",
@@ -127,13 +124,20 @@ class WorkflowManager:
             "Got all workflows",
             extra={
                 "num_of_workflows": len(all_workflow_models),
+                "tenant_id": tenant_id,
+                "trigger": trigger,
+                "incident_id": str(incident.id),
             },
         )
         for workflow_model in all_workflow_models:
             if workflow_model.is_disabled:
                 self.logger.debug(
-                    f"Skipping the workflow: id={workflow_model.id}, name={workflow_model.name}, "
-                    f"tenant_id={workflow_model.tenant_id} - Workflow is disabled."
+                    "Skipping the workflow - Workflow is disabled.",
+                    extra={
+                        "workflow_id": workflow_model.id,
+                        "workflow_name": workflow_model.name,
+                        "tenant_id": workflow_model.tenant_id,
+                    },
                 )
                 continue
             workflow = self._get_workflow_from_store(tenant_id, workflow_model)
@@ -152,7 +156,12 @@ class WorkflowManager:
 
             if trigger not in incident_triggers:
                 self.logger.debug(
-                    "workflow does not contain trigger %s, skipping", trigger
+                    "workflow does not contain trigger, skipping",
+                    extra={
+                        "workflow_id": workflow_model.id,
+                        "tenant_id": tenant_id,
+                        "trigger": trigger,
+                    },
                 )
                 continue
 
@@ -161,7 +170,6 @@ class WorkflowManager:
                 for k, v in incident_enrichment.enrichments.items():
                     setattr(incident, k, v)
 
-            self.logger.info("Adding workflow to run")
             with self.scheduler.lock:
                 self.scheduler.workflows_to_run.append(
                     {
@@ -172,13 +180,21 @@ class WorkflowManager:
                         "event": incident,
                     }
                 )
-            self.logger.info("Workflow added to run")
+            self.logger.info(
+                "Workflow added to run",
+                extra={
+                    "workflow_id": workflow_model.id,
+                    "tenant_id": tenant_id,
+                    "triggered_by": "incident:{}".format(trigger),
+                    "incident_id": str(incident.id),
+                },
+            )
 
     # @tb: should I move it to cel_utils.py?
     # logging is easier here and I don't see other places who might use this >.<
     def _convert_filters_to_cel(self, filters: list[dict[str, str]]):
         # Convert filters ({"key": "key", "value": "value"}) and friends to CEL
-        self.logger.info(
+        self.logger.debug(
             "Converting filters to CEL",
             extra={"original_filters": filters},
         )
@@ -271,11 +287,6 @@ class WorkflowManager:
                         else:
                             cel_filters.append(f'{key} == "{value}"')
 
-            self.logger.info(
-                "Converted filters to CEL",
-                extra={"cel_filters": cel_filters, "original_filters": filters},
-            )
-
             return " && ".join(cel_filters)
         except Exception as e:
             self.logger.exception(
@@ -284,18 +295,16 @@ class WorkflowManager:
             raise
 
     def insert_events(self, tenant_id, events: typing.List[AlertDto | IncidentDto]):
-        print(f"DEBUG: insert_events called for tenant {tenant_id} with {len(events)} events")
         for event in events:
-            self.logger.info("Getting all workflows", extra={"tenant_id": tenant_id})
             all_workflow_models = self.workflow_store.get_all_workflows(
                 tenant_id, exclude_disabled=True
             )
-            print(f"DEBUG: Found {len(all_workflow_models)} workflows in store for tenant {tenant_id}")
-            self.logger.info(
+            self.logger.debug(
                 "Got all workflows",
                 extra={
                     "num_of_workflows": len(all_workflow_models),
                     "tenant_id": tenant_id,
+                    "trigger": "alert",
                 },
             )
             for workflow_model in all_workflow_models:
@@ -366,7 +375,7 @@ class WorkflowManager:
                         # source is a special case which can be used as string comparison although it is a list
                         if "source" in cel:
                             try:
-                                self.logger.info(
+                                self.logger.debug(
                                     "Checking if source needs to be replaced",
                                     extra={
                                         "cel": cel,
@@ -461,15 +470,12 @@ class WorkflowManager:
                         continue
 
                     # enrich the alert with more data
-                    self.logger.info("Found a workflow to run")
                     event.trigger = "alert"
                     # prepare the alert with the enrichment
-                    self.logger.info("Enriching alert")
                     alert_enrichment = get_enrichment(tenant_id, event.fingerprint)
                     if alert_enrichment:
                         for k, v in alert_enrichment.enrichments.items():
                             setattr(event, k, v)
-                    self.logger.info("Alert enriched")
                     # apply only_on_change (https://github.com/keephq/keep/issues/801)
                     fields_that_needs_to_be_change = trigger.get("only_on_change", [])
                     severity_changed = trigger.get("severity_changed", False)
@@ -490,8 +496,10 @@ class WorkflowManager:
                                         "Skipping the workflow because the field hasn't change",
                                         extra={
                                             "field": field,
-                                            "event": event,
-                                            "previous_alert": previous_alert,
+                                            "fingerprint": event.fingerprint,
+                                            "event_id": event.id,
+                                            "workflow_id": workflow_model.id,
+                                            "tenant_id": tenant_id,
                                         },
                                     )
                                     should_run = False
@@ -515,7 +523,6 @@ class WorkflowManager:
                     if not should_run:
                         continue
                     # Lastly, if the workflow should run, add it to the scheduler
-                    self.logger.info("Adding workflow to run")
 
                     # SHAHAR: TODO - finish redis implementation
                     # if REDIS is enabled, add the workflow to the queue
@@ -574,8 +581,15 @@ class WorkflowManager:
                                 "event": event,
                             }
                         )
-                    self.logger.info("Workflow added to run")
-            self.logger.info("All workflows added to run")
+                    self.logger.info(
+                        "Workflow added to run",
+                        extra={
+                            "workflow_id": workflow_model.id,
+                            "tenant_id": tenant_id,
+                            "triggered_by": "alert",
+                            "event_fingerprint": event.fingerprint,
+                        },
+                    )
 
     def _get_event_value(self, event, filter_key):
         # if the filter key is a nested key, get the value
@@ -627,14 +641,6 @@ class WorkflowManager:
             error_message (str): The error message(s)
         """
         if workflow.on_failure:
-            self.logger.info(
-                f"Running on_failure action for workflow {workflow.workflow_id}",
-                extra={
-                    "workflow_execution_id": workflow_execution_id,
-                    "workflow_id": workflow.workflow_id,
-                    "tenant_id": workflow.context_manager.tenant_id,
-                },
-            )
             # Adding the exception message to the provider context, so it'll be available for the action
             message = (
                 f"Workflow {workflow.workflow_id} failed with errors: {error_message}"
@@ -646,8 +652,10 @@ class WorkflowManager:
             }
             workflow.on_failure.run()
             self.logger.info(
-                "Ran on_failure action for workflow",
+                "Ran on_failure action for workflow %s",
+                workflow.workflow_id,
                 extra={
+                    "error_message": error_message,
                     "workflow_execution_id": workflow_execution_id,
                     "workflow_id": workflow.workflow_id,
                     "tenant_id": workflow.context_manager.tenant_id,
@@ -665,35 +673,61 @@ class WorkflowManager:
 
     @timing_histogram(workflow_execution_duration)
     def _run_workflow(self, workflow: Workflow, workflow_execution_id: str):
-        self.logger.debug(f"Running workflow {workflow.workflow_id}")
-        threading.current_thread().workflow_debug = workflow.workflow_debug
-        threading.current_thread().workflow_id = workflow.workflow_id
-        threading.current_thread().workflow_execution_id = workflow_execution_id
-        threading.current_thread().tenant_id = workflow.context_manager.tenant_id
-        errors = []
+        tenant_id = workflow.context_manager.tenant_id
+        log_extra = {
+            "workflow_id": workflow.workflow_id,
+            "workflow_execution_id": workflow_execution_id,
+            "tenant_id": tenant_id,
+        }
+        self.logger.debug("Running workflow", extra=log_extra)
+        thread = threading.current_thread()
+        thread.workflow_debug = workflow.workflow_debug
+        thread.workflow_id = workflow.workflow_id
+        thread.workflow_execution_id = workflow_execution_id
+        thread.tenant_id = tenant_id
         try:
-            self._check_premium_providers(workflow)
-            errors = workflow.run(workflow_execution_id)
-            if errors:
-                self._run_workflow_on_failure(
-                    workflow, workflow_execution_id, ", ".join(errors)
+            errors = []
+            try:
+                self._check_premium_providers(workflow)
+                errors = workflow.run(workflow_execution_id)
+                if errors:
+                    self._run_workflow_on_failure(
+                        workflow, workflow_execution_id, ", ".join(errors)
+                    )
+            except Exception as e:
+                self.logger.error(
+                    "Error running workflow %s: %s",
+                    workflow.workflow_id,
+                    e,
+                    extra={"exception": e, **log_extra},
                 )
-        except Exception as e:
-            self.logger.error(
-                f"Error running workflow {workflow.workflow_id}",
-                extra={"exception": e, "workflow_execution_id": workflow_execution_id},
-            )
-            self._run_workflow_on_failure(workflow, workflow_execution_id, str(e))
-            raise
+                self._run_workflow_on_failure(workflow, workflow_execution_id, str(e))
+                raise
 
-        if errors is not None and any(errors):
-            self.logger.info(msg=f"Workflow {workflow.workflow_id} ran with errors")
-        else:
-            self.logger.info(f"Workflow {workflow.workflow_id} ran successfully")
+            if errors is not None and any(errors):
+                self.logger.info(
+                    "Workflow %s ran with errors",
+                    workflow.workflow_id,
+                    extra={"errors": errors, **log_extra},
+                )
+            else:
+                self.logger.info(
+                    "Workflow %s ran successfully",
+                    workflow.workflow_id,
+                    extra=log_extra,
+                )
 
-        self._save_workflow_results(workflow, workflow_execution_id)
+            self._save_workflow_results(workflow, workflow_execution_id)
 
-        return [errors, None]
+            return [errors, None]
+        finally:
+            # Pool threads are reused; don't stamp this run's ids on later logs.
+            # Records already got them at emit time (WorkflowContextFilter).
+            thread.workflow_debug = None
+            thread.workflow_id = None
+            thread.workflow_execution_id = None
+            thread.tenant_id = None
+            thread.step_id = None
 
     @staticmethod
     def _get_workflow_results(workflow: Workflow):
@@ -724,7 +758,11 @@ class WorkflowManager:
             workflow (Workflow): The workflow to save.
             workflow_execution_id (str): The workflow execution ID.
         """
-        self.logger.info(f"Saving workflow {workflow.workflow_id} results")
+        log_extra = {
+            "workflow_id": workflow.workflow_id,
+            "workflow_execution_id": workflow_execution_id,
+            "tenant_id": workflow.context_manager.tenant_id,
+        }
         workflow_results = {
             action.name: action.provider.results for action in workflow.workflow_actions
         }
@@ -740,11 +778,15 @@ class WorkflowManager:
             )
         except Exception as e:
             self.logger.error(
-                f"Error saving workflow {workflow.workflow_id} results",
-                extra={"exception": e},
+                "Error saving workflow %s results: %s",
+                workflow.workflow_id,
+                e,
+                extra={"exception": e, **log_extra},
             )
             raise
-        self.logger.info(f"Workflow {workflow.workflow_id} results saved")
+        self.logger.info(
+            "Workflow %s results saved", workflow.workflow_id, extra=log_extra
+        )
 
     def _run_workflows_from_cli(self, workflows: typing.List[Workflow]):
         workflows_errors = []
@@ -757,8 +799,12 @@ class WorkflowManager:
                 workflows_errors.append(errors)
             except Exception as e:
                 self.logger.error(
-                    f"Error running workflow {workflow.workflow_id}",
-                    extra={"exception": e},
+                    "Error running workflow",
+                    extra={
+                        "exception": e,
+                        "workflow_id": workflow.workflow_id,
+                        "tenant_id": workflow.context_manager.tenant_id,
+                    },
                 )
                 raise
 

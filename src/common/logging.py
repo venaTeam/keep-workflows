@@ -1,4 +1,3 @@
-import http.client
 import inspect
 import logging
 import logging.config
@@ -7,6 +6,7 @@ import os
 import sys
 import threading
 import uuid
+from contextvars import ContextVar, Token
 import queue
 import requests
 import json
@@ -109,6 +109,53 @@ class WorkflowContextFilter(logging.Filter):
         return True
 
 
+# Per-request log fields set by LoggingMiddleware. A dict, so auth can add
+# tenant_id later and copied contexts (threadpool) still see it.
+_request_log_context: ContextVar[dict | None] = ContextVar(
+    "request_log_context", default=None
+)
+
+LOG_CONTEXT_FIELDS = ("tenant_id", "trace_id", "workflow_id", "workflow_execution_id")
+
+
+def set_request_log_context(**fields) -> Token:
+    return _request_log_context.set(
+        {key: value for key, value in fields.items() if value is not None}
+    )
+
+
+def update_request_log_context(**fields):
+    context = _request_log_context.get()
+    if context is not None:
+        context.update(
+            {key: value for key, value in fields.items() if value is not None}
+        )
+
+
+def reset_request_log_context(token: Token):
+    _request_log_context.reset(token)
+
+
+class LogContextFilter(logging.Filter):
+    """
+    Adds tenant/trace/workflow ids to records that don't have them, from the
+    request context or the workflow thread. Never drops a record.
+    """
+
+    def filter(self, record):
+        request_context = _request_log_context.get() or {}
+        thread = threading.current_thread()
+        for field in LOG_CONTEXT_FIELDS:
+            if field in record.__dict__:
+                continue
+            value = request_context.get(field)
+            if value is None:
+                value = getattr(thread, field, None)
+            if value is not None:
+                setattr(record, field, value)
+        return True
+
+
 class WorkflowDBHandler(logging.Handler):
     def __init__(self, flush_interval: int = 2):
         super().__init__()
@@ -147,9 +194,21 @@ class WorkflowDBHandler(logging.Handler):
             self.format(record)
             self.records.append(record)
 
+    @staticmethod
+    def _to_log_entry(record) -> dict:
+        # "_event" is skipped by the JSON formatter, so the triggering event
+        # reaches the UI run log context without going to stdout/Elastic.
+        entry = dict(record.__dict__)
+        event = entry.pop("_event", None)
+        if event is not None:
+            entry["context"] = {**(entry.get("context") or {}), "event": event}
+        return entry
+
     def push_logs_to_db(self):
         # Convert log records to a list of dictionaries and clean the self.records buffer
-        log_entries, self.records = [record.__dict__ for record in self.records], []
+        log_entries, self.records = [
+            self._to_log_entry(record) for record in self.records
+        ], []
         # Push log entries to the database
         push_logs_to_db(log_entries)
 
@@ -158,13 +217,13 @@ class WorkflowDBHandler(logging.Handler):
             return
 
         try:
-            logging.getLogger(__name__).info("Flushing workflow logs to DB")
+            logging.getLogger(__name__).debug("Flushing workflow logs to DB")
             self.push_logs_to_db()
-            logging.getLogger(__name__).info("Flushed workflow logs to DB")
+            logging.getLogger(__name__).debug("Flushed workflow logs to DB")
         except Exception as e:
             # Use the parent logger to avoid infinite recursion
             logging.getLogger(__name__).error(
-                f"Failed to flush workflow logs: {str(e)}"
+                "Failed to flush workflow logs", extra={"error": str(e)}
             )
         finally:
             # Clear the timer reference
@@ -302,7 +361,11 @@ class DevTerminalFormatter(logging.Formatter):
                 extra = frame.f_locals.get("extra", {})
                 if extra:
                     extra_info = " ".join(
-                        [f"[{k}: {v}]" for k, v in extra.items() if k != "raw_event"]
+                        [
+                            f"[{k}: {v}]"
+                            for k, v in extra.items()
+                            if k != "raw_event" and not k.startswith("_")
+                        ]
                     )
                 else:
                     extra_info = ""
@@ -383,12 +446,6 @@ class CustomJsonFormatter(jsonlogger.JsonFormatter):
             log_record["worker_type"] = getattr(record, "worker_type", WORKER_TYPE)
 
 
-class UvicornAccessFormatter(logging.Formatter):
-    def format(self, record):
-        if not hasattr(record, "otelTraceID"):
-            record.otelTraceID = "-"
-        return super().format(record)
-
 CONFIG = {
     "version": 1,
     "disable_existing_loggers": False,
@@ -408,10 +465,6 @@ CONFIG = {
             "()": DevTerminalFormatter,
             "format": "%(asctime)s - %(thread)s %(otelTraceID)s %(threadName)s %(levelname)s - %(message)s",
         },
-        "uvicorn_access": {
-            "()": "src.common.logging.UvicornAccessFormatter",
-            "format": "%(asctime)s - %(otelTraceID)s - %(threadName)s - %(message)s",
-        },
     },
     "handlers": {
         "default": {
@@ -421,6 +474,7 @@ CONFIG = {
             ),
             "class": "logging.StreamHandler",
             "stream": "ext://sys.stdout",
+            "filters": ["log_context"],
         },
         "workflowhandler": {
             "level": "DEBUG",
@@ -430,13 +484,10 @@ CONFIG = {
             "class": "src.common.logging.WorkflowDBHandler",
             "filters": ["thread_context"],  # Add filter here
         },
-        "uvicorn_access": {  # Add new handler for uvicorn.access
-            "class": "logging.StreamHandler",
-            "formatter": "uvicorn_access",
-        },
     },
     "filters": {  # Add filters section
-        "thread_context": {"()": "src.common.logging.WorkflowContextFilter"}
+        "thread_context": {"()": "src.common.logging.WorkflowContextFilter"},
+        "log_context": {"()": "src.common.logging.LogContextFilter"},
     },
     "loggers": {
         "": {
@@ -449,10 +500,11 @@ CONFIG = {
             "level": LOG_LEVEL,
             "propagate": False,
         },
-        "uvicorn.access": {  # Add uvicorn.access logger configuration
+        # off: duplicates the middleware request log
+        "uvicorn.access": {
             "()": "src.common.logging.CustomizedUvicornLogger",
-            "handlers": ["uvicorn_access"],
-            "level": get_gunicorn_log_level(),
+            "handlers": [],
+            "level": "WARNING",
             "propagate": False,
         },
         "uvicorn.error": {  # Add uvicorn.error logger configuration
@@ -489,11 +541,6 @@ CONFIG = {
         "httpx": {
             "handlers": [],
             "level": "ERROR",
-            "propagate": False,
-        },
-        "http.client": {
-            "handlers": ["default"],
-            "level": "DEBUG",
             "propagate": False,
         },
     },
@@ -594,28 +641,17 @@ def setup_logging():
         # Add file handler to root logger
         CONFIG["loggers"][""]["handlers"].append("file")
 
-    # Add fluentbit handler if KEEP_FLUENTBIT is set
-    if KEEP_FLUENTBIT:
+    # Add fluentbit handler if KEEP_FLUENTBIT is set and has a host
+    if KEEP_FLUENTBIT and KEEP_FLUENTBIT_HOST:
         CONFIG["handlers"]["fluentbit"] = {
-            "level": "DEBUG",
+            "level": LOG_LEVEL,
             "formatter": ("json"),
             "class": "src.common.logging.FluentBitHandler",
             "host": KEEP_FLUENTBIT_HOST,
             "port": int(KEEP_FLUENTBIT_PORT),
+            "filters": ["log_context"],
         }
         # Add file handler to root logger
         CONFIG["loggers"][""]["handlers"].append("fluentbit")
 
     logging.config.dictConfig(CONFIG)
-    # MONKEY PATCHING http.client
-    # See: https://stackoverflow.com/questions/58738195/python-http-request-and-debug-level-logging-to-the-log-file
-    http_client_logger = logging.getLogger("http.client")
-    http_client_logger.setLevel(logging.DEBUG)
-    http.client.HTTPConnection.debuglevel = 1
-
-    def print_to_log(*args):
-        http_client_logger.debug(" ".join(args))
-
-    # monkey-patch a `print` global into the http.client module; all calls to
-    # print() in that module will then use our print_to_log implementation
-    http.client.print = print_to_log
