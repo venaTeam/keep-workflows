@@ -322,7 +322,8 @@ class BaseProvider(metaclass=abc.ABCMeta):
                         setattr(event, enrichment["key"], value)
             except Exception:
                 self.logger.error(
-                    "Failed to enrich alert",
+                    "Failed to enrich alert - enrichment: %s",
+                    enrichment,
                     extra={
                         "enrichment": enrichment,
                         "fingerprint": fingerprint,
@@ -385,7 +386,8 @@ class BaseProvider(metaclass=abc.ABCMeta):
 
         except Exception as e:
             self.logger.error(
-                "Failed to enrich entity in db",
+                "Failed to enrich %s in db",
+                entity_type,
                 extra={
                     "entity_type": entity_type,
                     "fingerprint": fingerprint,
@@ -394,7 +396,8 @@ class BaseProvider(metaclass=abc.ABCMeta):
             )
             raise e
         self.logger.info(
-            "Entity enriched",
+            "%s enriched",
+            entity_type.capitalize(),
             extra={"entity_type": entity_type, "fingerprint": fingerprint, **log_extra},
         )
 
@@ -880,7 +883,8 @@ class BaseProvider(metaclass=abc.ABCMeta):
             )
         except Exception:
             self.logger.error(
-                "Failed to push alert",
+                "Failed to push alert to %s",
+                self.provider_id,
                 extra={
                     "tenant_id": self.context_manager.tenant_id,
                     "provider_id": self.provider_id,

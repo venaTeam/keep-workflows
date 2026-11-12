@@ -82,14 +82,16 @@ class Workflow:
         for step in self.workflow_steps:
             try:
                 threading.current_thread().step_id = step.step_id
-                self.logger.debug(
-                    "Running step",
+                self.logger.info(
+                    "Running step %s",
+                    step.step_id,
                     extra=self._log_extra(step_id=step.step_id, step_name=step.name),
                 )
                 step_ran = step.run()
                 if step_ran:
-                    self.logger.debug(
-                        "Step ran successfully",
+                    self.logger.info(
+                        "Step %s ran successfully",
+                        step.step_id,
                         extra=self._log_extra(step_id=step.step_id),
                     )
                     threading.current_thread().step_id = None
@@ -103,16 +105,18 @@ class Workflow:
                     break
             except StepError as e:
                 self.logger.error(
-                    "Step failed",
-                    exc_info=True,
+                    "Step %s failed: %s",
+                    step.step_id,
+                    e,
                     extra=self._log_extra(step_id=step.step_id, error=str(e)),
                 )
                 threading.current_thread().step_id = None
                 raise
 
     def run_action(self, action: Step):
-        self.logger.debug(
-            "Running action",
+        self.logger.info(
+            "Running action %s",
+            action.name,
             extra=self._log_extra(action_name=action.name, step_id=action.step_id),
         )
         try:
@@ -120,8 +124,9 @@ class Workflow:
             action_ran = action.run()
             action_error = None
             if action_ran:
-                self.logger.debug(
-                    "Action ran successfully",
+                self.logger.info(
+                    "Action %s ran successfully",
+                    action.name,
                     extra=self._log_extra(
                         action_name=action.name, step_id=action.step_id
                     ),
@@ -137,7 +142,9 @@ class Workflow:
                 action_stop = True
         except Exception as e:
             self.logger.error(
-                "Action failed",
+                "Action %s failed: %s",
+                action.name,
+                e,
                 exc_info=True,
                 extra=self._log_extra(
                     action_name=action.name, step_id=action.step_id, error=str(e)
@@ -160,7 +167,8 @@ class Workflow:
             # if the action ran + the action configured to stop the workflow:
             elif action_status and action_stop:
                 self.logger.info(
-                    "Action stop, stopping the workflow",
+                    "Action %s stop, stopping the workflow",
+                    action.name,
                     extra=self._log_extra(
                         action_name=action.name, step_id=action.step_id
                     ),
@@ -171,7 +179,8 @@ class Workflow:
     def run(self, workflow_execution_id):
         if self.workflow_disabled:
             self.logger.info(
-                "Skipping disabled workflow",
+                "Skipping disabled workflow %s",
+                self.workflow_id,
                 extra=self._log_extra(workflow_execution_id=workflow_execution_id),
             )
             return
@@ -179,12 +188,15 @@ class Workflow:
             self.context_manager.event_context or self.context_manager.incident_context
         )
         self.logger.info(
-            "Running workflow",
+            "Running workflow %s",
+            self.workflow_id,
             extra=self._log_extra(
                 workflow_execution_id=workflow_execution_id,
                 event_id=getattr(event, "id", None),
                 fingerprint=getattr(event, "fingerprint", None),
                 trigger=getattr(event, "trigger", None),
+                # stored in the UI run log only; "_" keeps it out of JSON logs
+                _event=event,
             ),
         )
         self.context_manager.set_execution_context(
@@ -194,14 +206,17 @@ class Workflow:
             self.run_steps()
         except StepError as e:
             self.logger.error(
-                "Workflow failed",
+                "Workflow %s failed: %s",
+                self.workflow_id,
+                e,
                 exc_info=True,
                 extra=self._log_extra(error=str(e)),
             )
             raise
         actions_firing, actions_errors = self.run_actions()
         self.logger.info(
-            "Finish to run workflow",
+            "Finish to run workflow %s",
+            self.workflow_id,
             extra=self._log_extra(errors_count=len(actions_errors)),
         )
         return actions_errors

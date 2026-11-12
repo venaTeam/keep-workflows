@@ -194,9 +194,21 @@ class WorkflowDBHandler(logging.Handler):
             self.format(record)
             self.records.append(record)
 
+    @staticmethod
+    def _to_log_entry(record) -> dict:
+        # "_event" is skipped by the JSON formatter, so the triggering event
+        # reaches the UI run log context without going to stdout/Elastic.
+        entry = dict(record.__dict__)
+        event = entry.pop("_event", None)
+        if event is not None:
+            entry["context"] = {**(entry.get("context") or {}), "event": event}
+        return entry
+
     def push_logs_to_db(self):
         # Convert log records to a list of dictionaries and clean the self.records buffer
-        log_entries, self.records = [record.__dict__ for record in self.records], []
+        log_entries, self.records = [
+            self._to_log_entry(record) for record in self.records
+        ], []
         # Push log entries to the database
         push_logs_to_db(log_entries)
 
@@ -349,7 +361,11 @@ class DevTerminalFormatter(logging.Formatter):
                 extra = frame.f_locals.get("extra", {})
                 if extra:
                     extra_info = " ".join(
-                        [f"[{k}: {v}]" for k, v in extra.items() if k != "raw_event"]
+                        [
+                            f"[{k}: {v}]"
+                            for k, v in extra.items()
+                            if k != "raw_event" and not k.startswith("_")
+                        ]
                     )
                 else:
                     extra_info = ""

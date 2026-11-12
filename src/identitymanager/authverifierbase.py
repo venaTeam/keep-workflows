@@ -139,6 +139,8 @@ class AuthVerifierBase:
             request, api_key, authorization, token, body=body, session=session
         )
 
+        # verified tenant replaces the unverified one the middleware set
+        update_request_log_context(tenant_id=authenticated_entity.tenant_id)
         self.authorize(authenticated_entity)
         return authenticated_entity
 

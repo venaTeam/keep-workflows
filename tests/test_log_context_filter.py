@@ -7,7 +7,9 @@ from fastapi.testclient import TestClient
 
 from src.api.middlewares import LoggingMiddleware
 from src.common.logging import (
+    CustomJsonFormatter,
     LogContextFilter,
+    WorkflowDBHandler,
     reset_request_log_context,
     set_request_log_context,
     update_request_log_context,
@@ -121,3 +123,49 @@ def test_no_context_does_not_crash():
     assert record.getMessage() == "no context"
     for field in ("tenant_id", "trace_id", "workflow_id", "workflow_execution_id"):
         assert getattr(record, field, None) is None
+
+
+def test_request_that_raises_logs_request_finished_500():
+    middleware_logger = logging.getLogger("src.api.middlewares")
+    original_level, original_propagate = (
+        middleware_logger.level,
+        middleware_logger.propagate,
+    )
+    _, handler = _logger_with_capture("src.api.middlewares")
+    app = FastAPI()
+
+    @app.get("/boom")
+    def boom():
+        raise RuntimeError("boom")
+
+    app.add_middleware(LoggingMiddleware)
+
+    client = TestClient(app, raise_server_exceptions=False)
+    try:
+        response = client.get("/boom")
+    finally:
+        middleware_logger.removeHandler(handler)
+        middleware_logger.setLevel(original_level)
+        middleware_logger.propagate = original_propagate
+
+    assert response.status_code == 500
+    finished = [r for r in handler.records if r.getMessage() == "Request finished"]
+    assert len(finished) == 1
+    assert finished[0].levelno == logging.ERROR
+    assert finished[0].status_code == 500
+    assert finished[0].method == "GET"
+    assert finished[0].path == "/boom"
+    assert finished[0].exc_info is None
+
+
+def test_workflow_event_goes_to_db_context_not_json_logs():
+    record = logging.LogRecord("test", logging.INFO, __file__, 1, "msg", None, None)
+    record._event = {"name": "server-is-down"}
+    record.context = {"step_id": "step-1"}
+
+    assert "server-is-down" not in CustomJsonFormatter("%(message)s").format(record)
+    entry = WorkflowDBHandler._to_log_entry(record)
+    assert entry["context"] == {
+        "step_id": "step-1",
+        "event": {"name": "server-is-down"},
+    }

@@ -160,7 +160,8 @@ class ElasticClient:
                 return []
             else:
                 self.logger.exception(
-                    "Failed to run query in Elastic",
+                    "Failed to run query in Elastic: %s",
+                    e,
                     extra={
                         "tenant_id": self.tenant_id,
                         "query": query[:500],
@@ -170,7 +171,8 @@ class ElasticClient:
                 raise Exception(f"Failed to run query in Elastic: {e}")
         except Exception as e:
             self.logger.exception(
-                "Failed to run query in Elastic",
+                "Failed to run query in Elastic: %s",
+                e,
                 extra={
                     "tenant_id": self.tenant_id,
                     "query": query[:500],
@@ -215,7 +217,8 @@ class ElasticClient:
                 return []
             else:
                 self.logger.error(
-                    "Failed to run query in Elastic",
+                    "Failed to run query in Elastic: %s",
+                    e,
                     extra={
                         "tenant_id": self.tenant_id,
                         "query": query[:500],
@@ -225,7 +228,8 @@ class ElasticClient:
                 raise Exception(f"Failed to run query in Elastic: {e}")
         except Exception as e:
             self.logger.error(
-                "Failed to search alerts in Elastic",
+                "Failed to search alerts in Elastic: %s",
+                e,
                 extra={
                     "tenant_id": self.tenant_id,
                     "query": query[:500],
@@ -252,7 +256,8 @@ class ElasticClient:
         # TODO: retry/pubsub
         except ApiError as e:
             self.logger.error(
-                "Failed to index alert to Elastic",
+                "Failed to index alert to Elastic: %s",
+                e,
                 extra={
                     "tenant_id": self.tenant_id,
                     "fingerprint": alert.fingerprint,
@@ -263,7 +268,8 @@ class ElasticClient:
             raise Exception(f"Failed to index alert to Elastic: {e} {e.errors}")
         except Exception as e:
             self.logger.error(
-                "Failed to index alert to Elastic",
+                "Failed to index alert to Elastic: %s",
+                e,
                 extra={
                     "tenant_id": self.tenant_id,
                     "fingerprint": alert.fingerprint,
@@ -306,7 +312,8 @@ class ElasticClient:
             )
         except BulkIndexError as e:
             self.logger.error(
-                "Failed to index alerts to Elastic",
+                "Failed to index alerts to Elastic: %s",
+                e,
                 extra={
                     "tenant_id": self.tenant_id,
                     "batch_size": len(actions),
@@ -317,7 +324,8 @@ class ElasticClient:
             raise Exception(f"Failed to index alerts to Elastic: {e} {e.errors}")
         except ApiError as e:
             self.logger.error(
-                "Failed to index alerts to Elastic",
+                "Failed to index alerts to Elastic: %s",
+                e,
                 extra={
                     "tenant_id": self.tenant_id,
                     "batch_size": len(actions),
@@ -328,7 +336,8 @@ class ElasticClient:
             raise Exception(f"Failed to index alerts to Elastic: {e} {e.errors}")
         except Exception as e:
             self.logger.exception(
-                "Failed to index alerts to Elastic",
+                "Failed to index alerts to Elastic: %s",
+                e,
                 extra={"tenant_id": self.tenant_id, "batch_size": len(actions)},
             )
             raise Exception(f"Failed to index alerts to Elastic: {e}")
@@ -341,7 +350,8 @@ class ElasticClient:
         alert = self._client.get(index=self.alerts_index, id=alert_fingerprint)
         if not alert:
             self.logger.error(
-                "Alert with fingerprint not found",
+                "Alert with fingerprint %s not found",
+                alert_fingerprint,
                 extra={"tenant_id": self.tenant_id, "fingerprint": alert_fingerprint},
             )
             return

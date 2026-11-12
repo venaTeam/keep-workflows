@@ -652,7 +652,8 @@ class WorkflowManager:
             }
             workflow.on_failure.run()
             self.logger.info(
-                "Ran on_failure action for workflow",
+                "Ran on_failure action for workflow %s",
+                workflow.workflow_id,
                 extra={
                     "error_message": error_message,
                     "workflow_execution_id": workflow_execution_id,
@@ -679,36 +680,54 @@ class WorkflowManager:
             "tenant_id": tenant_id,
         }
         self.logger.debug("Running workflow", extra=log_extra)
-        threading.current_thread().workflow_debug = workflow.workflow_debug
-        threading.current_thread().workflow_id = workflow.workflow_id
-        threading.current_thread().workflow_execution_id = workflow_execution_id
-        threading.current_thread().tenant_id = tenant_id
-        errors = []
+        thread = threading.current_thread()
+        thread.workflow_debug = workflow.workflow_debug
+        thread.workflow_id = workflow.workflow_id
+        thread.workflow_execution_id = workflow_execution_id
+        thread.tenant_id = tenant_id
         try:
-            self._check_premium_providers(workflow)
-            errors = workflow.run(workflow_execution_id)
-            if errors:
-                self._run_workflow_on_failure(
-                    workflow, workflow_execution_id, ", ".join(errors)
+            errors = []
+            try:
+                self._check_premium_providers(workflow)
+                errors = workflow.run(workflow_execution_id)
+                if errors:
+                    self._run_workflow_on_failure(
+                        workflow, workflow_execution_id, ", ".join(errors)
+                    )
+            except Exception as e:
+                self.logger.error(
+                    "Error running workflow %s: %s",
+                    workflow.workflow_id,
+                    e,
+                    extra={"exception": e, **log_extra},
                 )
-        except Exception as e:
-            self.logger.error(
-                "Error running workflow",
-                extra={"exception": e, **log_extra},
-            )
-            self._run_workflow_on_failure(workflow, workflow_execution_id, str(e))
-            raise
+                self._run_workflow_on_failure(workflow, workflow_execution_id, str(e))
+                raise
 
-        if errors is not None and any(errors):
-            self.logger.info(
-                "Workflow ran with errors", extra={"errors": errors, **log_extra}
-            )
-        else:
-            self.logger.info("Workflow ran successfully", extra=log_extra)
+            if errors is not None and any(errors):
+                self.logger.info(
+                    "Workflow %s ran with errors",
+                    workflow.workflow_id,
+                    extra={"errors": errors, **log_extra},
+                )
+            else:
+                self.logger.info(
+                    "Workflow %s ran successfully",
+                    workflow.workflow_id,
+                    extra=log_extra,
+                )
 
-        self._save_workflow_results(workflow, workflow_execution_id)
+            self._save_workflow_results(workflow, workflow_execution_id)
 
-        return [errors, None]
+            return [errors, None]
+        finally:
+            # Pool threads are reused; don't stamp this run's ids on later logs.
+            # Records already got them at emit time (WorkflowContextFilter).
+            thread.workflow_debug = None
+            thread.workflow_id = None
+            thread.workflow_execution_id = None
+            thread.tenant_id = None
+            thread.step_id = None
 
     @staticmethod
     def _get_workflow_results(workflow: Workflow):
@@ -759,11 +778,15 @@ class WorkflowManager:
             )
         except Exception as e:
             self.logger.error(
-                "Error saving workflow results",
+                "Error saving workflow %s results: %s",
+                workflow.workflow_id,
+                e,
                 extra={"exception": e, **log_extra},
             )
             raise
-        self.logger.info("Workflow results saved", extra=log_extra)
+        self.logger.info(
+            "Workflow %s results saved", workflow.workflow_id, extra=log_extra
+        )
 
     def _run_workflows_from_cli(self, workflows: typing.List[Workflow]):
         workflows_errors = []

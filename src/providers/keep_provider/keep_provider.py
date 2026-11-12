@@ -140,7 +140,8 @@ class KeepProvider(BaseProvider):
                 )
             except Exception as e:
                 self.logger.exception(
-                    "Failed to search alerts by CEL",
+                    "Failed to search alerts by CEL: %s",
+                    e,
                     extra=self._log_extra(filter=filter, error=str(e)),
                 )
                 raise
@@ -500,9 +501,9 @@ class KeepProvider(BaseProvider):
 
         # create_alert_in_keep.yml for example
         if not alert_results:
-            self.logger.debug("No alert results found")
+            self.logger.info("No alert results found")
             if alert:
-                self.logger.debug("Creating alert from 'alert' parameter")
+                self.logger.info("Creating alert from 'alert' parameter")
                 alert_results = [alert]
 
         self.logger.debug(
@@ -517,7 +518,7 @@ class KeepProvider(BaseProvider):
         # if we need to check if_condition, handle the condition
         trigger_alerts = []
         if if_condition:
-            self.logger.debug(
+            self.logger.info(
                 "Processing alerts with 'if' condition",
                 extra={"condition": if_condition},
             )
@@ -547,7 +548,7 @@ class KeepProvider(BaseProvider):
                 pass
         # if no if_condition, trigger all alerts
         else:
-            self.logger.debug("No 'if' condition - triggering all alerts")
+            self.logger.info("No 'if' condition - triggering all alerts")
             trigger_alerts = alert_results
 
         # build the alert dtos
@@ -607,7 +608,7 @@ class KeepProvider(BaseProvider):
 
         # if for_duration is provided, handle state alerts
         if for_duration:
-            self.logger.debug(
+            self.logger.info(
                 "Handling state alerts with 'for' condition",
                 extra={"for": for_duration},
             )
@@ -615,7 +616,7 @@ class KeepProvider(BaseProvider):
             alerts = self._handle_state_alerts(for_duration, alert_dtos)
         # else, handle all alerts
         else:
-            self.logger.debug("Handling stateless alerts")
+            self.logger.info("Handling stateless alerts")
             alerts = self._handle_stateless_alerts(alert_dtos, read_only=read_only)
 
         # handle all alerts
@@ -646,7 +647,8 @@ class KeepProvider(BaseProvider):
                         self.context_manager.tenant_id, workflow.id
                     )
                     self.logger.info(
-                        "Deleted workflow",
+                        "Deleted workflow %s",
+                        workflow.id,
                         extra={
                             "workflow_id": workflow.id,
                             "tenant_id": self.context_manager.tenant_id,
@@ -654,7 +656,9 @@ class KeepProvider(BaseProvider):
                     )
                 except Exception as e:
                     self.logger.exception(
-                        "Failed to delete workflow",
+                        "Failed to delete workflow %s: %s",
+                        workflow.id,
+                        e,
                         extra={
                             "workflow_id": workflow.id,
                             "tenant_id": self.context_manager.tenant_id,
@@ -666,7 +670,8 @@ class KeepProvider(BaseProvider):
                     )
             else:
                 self.logger.info(
-                    "Not deleting workflow as it's current workflow",
+                    "Not deleting workflow %s as it's current workflow",
+                    workflow.id,
                     extra={
                         "workflow_id": workflow.id,
                         "tenant_id": self.context_manager.tenant_id,
@@ -806,7 +811,10 @@ class KeepProvider(BaseProvider):
         # if the evaluation failed, raise an exception
         if aeval.error_msg:
             self.logger.error(
-                "Failed to evaluate if condition, you probably used a variable that doesn't exist.",
+                "Failed to evaluate if condition, you probably used a variable that doesn't exist. Condition: %s, Rendered: %s, Error: %s",
+                if_conf,
+                if_conf_rendered,
+                aeval.error_msg,
                 extra=self._log_extra(
                     condition=if_conf,
                     rendered=if_conf_rendered,
@@ -881,7 +889,8 @@ class KeepProvider(BaseProvider):
             if colon_pos == -1:
                 # Malformed ternary expression
                 self.logger.warning(
-                    "Malformed ternary expression",
+                    "Malformed ternary expression: %s",
+                    expression,
                     extra=self._log_extra(expression=expression),
                 )
                 return expression
@@ -914,14 +923,18 @@ class KeepProvider(BaseProvider):
                     # If there were errors during evaluation, log them but keep the original value
                     if aeval.error_msg:
                         self.logger.warning(
-                            "Error evaluating ternary expression",
+                            "Error evaluating ternary expression: %s. Error: %s",
+                            value,
+                            aeval.error_msg,
                             extra=self._log_extra(value=value, error=aeval.error_msg),
                         )
                     else:
                         rendered_providers_parameters[key] = result
                 except Exception as e:
                     self.logger.warning(
-                        "Failed to evaluate potential ternary expression",
+                        "Failed to evaluate potential ternary expression: %s. Error: %s",
+                        value,
+                        e,
                         extra=self._log_extra(value=value, error=str(e)),
                     )
 

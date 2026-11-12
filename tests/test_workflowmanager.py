@@ -1,3 +1,4 @@
+import threading
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -181,3 +182,35 @@ def test_handle_manual_event_workflow_test_run():
         )
         assert workflow_scheduler.workflows_to_run[0]["test_run"] == True
         assert workflow_scheduler.workflows_to_run[0]["workflow"] == mock_workflow
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_run_workflow_clears_thread_ids(fails):
+    mock_workflow = Mock(spec=Workflow)
+    mock_workflow.workflow_id = "workflow1"
+    mock_workflow.workflow_debug = True
+    mock_workflow.context_manager = Mock(tenant_id="tenant1")
+    mock_workflow.on_failure = None
+    if fails:
+        mock_workflow.run.side_effect = Exception("boom")
+    else:
+        mock_workflow.run.return_value = []
+
+    workflow_manager = WorkflowManager()
+    workflow_manager._save_workflow_results = Mock()
+
+    if fails:
+        with pytest.raises(Exception, match="boom"):
+            workflow_manager._run_workflow(mock_workflow, "execution1")
+    else:
+        workflow_manager._run_workflow(mock_workflow, "execution1")
+
+    thread = threading.current_thread()
+    for attr in (
+        "workflow_id",
+        "workflow_execution_id",
+        "tenant_id",
+        "workflow_debug",
+        "step_id",
+    ):
+        assert getattr(thread, attr, None) is None

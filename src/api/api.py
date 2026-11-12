@@ -285,6 +285,8 @@ def get_app(
             exc_info=exc,
             extra={
                 "error": str(exc),
+                "method": request.method,
+                "path": request.url.path,
                 "trace_id": getattr(request.state, "trace_id", None),
                 "tenant_id": getattr(request.state, "tenant_id", None),
             },
