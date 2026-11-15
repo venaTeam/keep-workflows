@@ -304,7 +304,7 @@ class MaintenanceWindowsBl:
                     if is_in_cel:
                         active = True
                         set_maintenance_windows_trace(alert, window, session)
-                        logger.debug(
+                        logger.info(
                             "Alert is blocked due to the maintenance window",
                             extra={
                                 "tenant_id": alert.tenant_id,
