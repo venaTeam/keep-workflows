@@ -903,7 +903,7 @@ class EnrichmentsBl:
                 "Failed to add enrichment log",
                 extra={
                     "tenant_id": self.tenant_id,
-                    "message": message,
+                    "enrichment_message": message,
                 },
             )
 

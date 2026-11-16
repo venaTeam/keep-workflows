@@ -672,7 +672,12 @@ class WorkflowManager:
             )
 
     @timing_histogram(workflow_execution_duration)
-    def _run_workflow(self, workflow: Workflow, workflow_execution_id: str):
+    def _run_workflow(
+        self,
+        workflow: Workflow,
+        workflow_execution_id: str,
+        clear_thread_ids: bool = True,
+    ):
         tenant_id = workflow.context_manager.tenant_id
         log_extra = {
             "workflow_id": workflow.workflow_id,
@@ -721,13 +726,23 @@ class WorkflowManager:
 
             return [errors, None]
         finally:
-            # Pool threads are reused; don't stamp this run's ids on later logs.
-            # Records already got them at emit time (WorkflowContextFilter).
-            thread.workflow_debug = None
-            thread.workflow_id = None
-            thread.workflow_execution_id = None
-            thread.tenant_id = None
-            thread.step_id = None
+            # The scheduler clears after its own failure log, so that log
+            # still reaches the run log.
+            if clear_thread_ids:
+                self.clear_thread_ids()
+
+    @staticmethod
+    def clear_thread_ids():
+        """Pool threads are reused; don't stamp a finished run's ids on later logs.
+
+        Records already got them at emit time (WorkflowContextFilter).
+        """
+        thread = threading.current_thread()
+        thread.workflow_debug = None
+        thread.workflow_id = None
+        thread.workflow_execution_id = None
+        thread.tenant_id = None
+        thread.step_id = None
 
     @staticmethod
     def _get_workflow_results(workflow: Workflow):

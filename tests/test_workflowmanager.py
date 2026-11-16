@@ -214,3 +214,26 @@ def test_run_workflow_clears_thread_ids(fails):
         "step_id",
     ):
         assert getattr(thread, attr, None) is None
+
+
+def test_scheduler_failure_log_keeps_thread_ids():
+    """The scheduler logs "Failed to run workflow" after the manager returns,
+    so the manager must leave the ids for it and the scheduler clears them."""
+    mock_workflow = Mock(spec=Workflow)
+    mock_workflow.workflow_id = "workflow1"
+    mock_workflow.workflow_debug = False
+    mock_workflow.context_manager = Mock(tenant_id="tenant1")
+    mock_workflow.on_failure = None
+    mock_workflow.run.side_effect = Exception("boom")
+
+    workflow_manager = WorkflowManager()
+    with pytest.raises(Exception, match="boom"):
+        workflow_manager._run_workflow(
+            mock_workflow, "execution1", clear_thread_ids=False
+        )
+    thread = threading.current_thread()
+    assert thread.workflow_id == "workflow1"
+    assert thread.workflow_execution_id == "execution1"
+
+    WorkflowManager.clear_thread_ids()
+    assert thread.workflow_id is None

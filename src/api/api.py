@@ -300,9 +300,10 @@ def get_app(
             },
         )
 
-    app.add_middleware(LoggingMiddleware)
     if KEEP_USE_LIMITER:
         app.add_middleware(SlowAPIMiddleware)
+    # added after SlowAPIMiddleware so it wraps it and logs its 429s
+    app.add_middleware(LoggingMiddleware)
 
     if KEEP_METRICS:
         instrumentator = Instrumentator(

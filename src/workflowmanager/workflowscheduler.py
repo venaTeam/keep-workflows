@@ -181,7 +181,13 @@ class WorkflowScheduler:
             self.futures.add(future)
             future.add_done_callback(lambda f: self.futures.remove(f))
 
-    def _run_workflow(
+    def _run_workflow(self, *args, **kwargs):
+        try:
+            return self._run_and_finish_workflow(*args, **kwargs)
+        finally:
+            self.workflow_manager.clear_thread_ids()
+
+    def _run_and_finish_workflow(
         self,
         tenant_id,
         workflow_id,
@@ -231,7 +237,7 @@ class WorkflowScheduler:
                 workflow.context_manager.set_inputs(inputs)
 
             errors, _ = self.workflow_manager._run_workflow(
-                workflow, workflow_execution_id
+                workflow, workflow_execution_id, clear_thread_ids=False
             )
         except Exception as e:
             # Track error metrics

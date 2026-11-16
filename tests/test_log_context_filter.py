@@ -102,7 +102,9 @@ def test_workflow_thread_logs_get_workflow_ids():
 
 def test_explicit_extra_wins():
     logger, handler = _logger_with_capture("test.log_context.explicit")
-    token = set_request_log_context(tenant_id="context-tenant", trace_id="context-trace")
+    token = set_request_log_context(
+        tenant_id="context-tenant", trace_id="context-trace"
+    )
     try:
         logger.info(
             "explicit", extra={"tenant_id": "explicit-tenant", "trace_id": None}
@@ -169,3 +171,34 @@ def test_workflow_event_goes_to_db_context_not_json_logs():
         "step_id": "step-1",
         "event": {"name": "server-is-down"},
     }
+
+
+def test_uvicorn_duplicate_traceback_is_dropped():
+    from src.common.logging import DropUvicornASGIExceptionFilter
+
+    f = DropUvicornASGIExceptionFilter()
+
+    def rec(msg):
+        return logging.LogRecord("uvicorn.error", logging.ERROR, "", 0, msg, None, None)
+
+    assert not f.filter(rec("Exception in ASGI application\n"))
+    assert f.filter(rec("Started server process"))
+
+
+def test_redact_headers_hides_secret_headers_any_case():
+    from src.api.middlewares import _redact_headers
+
+    headers = {
+        "Authorization": "Bearer x",
+        "X-Api-Key": "k",
+        "Cookie": "s=1",
+        "X-Gitlab-Token": "t",
+        "X-Hub-Signature-256": "sha256=x",
+        "X-Grafana-Token": "t",
+        "Content-Type": "application/json",
+        "User-Agent": "curl",
+    }
+    redacted = _redact_headers(headers)
+    assert redacted.pop("Content-Type") == "application/json"
+    assert redacted.pop("User-Agent") == "curl"
+    assert set(redacted.values()) == {"[REDACTED]"}
