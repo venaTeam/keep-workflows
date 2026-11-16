@@ -312,6 +312,8 @@ def test_workflow_update_from_workflow(db_session, workflow_manager, mocker):
     assert workflow_execution is not None
     assert workflow_execution.status == "success"
 
+    first_execution_id = workflow_execution.id
+
     # Update workflow with modified content
     mock_http_query.return_value = [modified_workflow_yaml]
 
@@ -323,7 +325,7 @@ def test_workflow_update_from_workflow(db_session, workflow_manager, mocker):
 
     # Wait for workflow execution to complete
     workflow_execution = wait_for_workflow_execution(
-        SINGLE_TENANT_UUID, "http-workflow-sync"
+        SINGLE_TENANT_UUID, "http-workflow-sync", exclude_ids=[first_execution_id]
     )
 
     # Verify workflow execution
