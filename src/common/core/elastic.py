@@ -12,6 +12,18 @@ from src.common.models.alert import AlertDto, AlertSeverity
 from src.common.utils.cel_utils import preprocess_cel_expression
 
 
+def _first_bulk_error(errors: list) -> dict | None:
+    """The first failed item's id, status and error, without the document."""
+    if not errors:
+        return None
+    item = next(iter(errors[0].values()), {})
+    return {
+        "id": item.get("_id"),
+        "status": item.get("status"),
+        "error": item.get("error"),
+    }
+
+
 class ElasticClient:
     def __init__(
         self,
@@ -262,7 +274,7 @@ class ElasticClient:
                     "tenant_id": self.tenant_id,
                     "fingerprint": alert.fingerprint,
                     "error": str(e),
-                    "errors": e.errors,
+                    "status_code": e.status_code,
                 },
             )
             raise Exception(f"Failed to index alert to Elastic: {e} {e.errors}")
@@ -318,7 +330,8 @@ class ElasticClient:
                     "tenant_id": self.tenant_id,
                     "batch_size": len(actions),
                     "error": str(e),
-                    "errors": e.errors,
+                    "failed_count": len(e.errors),
+                    "first_error": _first_bulk_error(e.errors),
                 },
             )
             raise Exception(f"Failed to index alerts to Elastic: {e} {e.errors}")
@@ -330,7 +343,7 @@ class ElasticClient:
                     "tenant_id": self.tenant_id,
                     "batch_size": len(actions),
                     "error": str(e),
-                    "errors": e.errors,
+                    "status_code": e.status_code,
                 },
             )
             raise Exception(f"Failed to index alerts to Elastic: {e} {e.errors}")
