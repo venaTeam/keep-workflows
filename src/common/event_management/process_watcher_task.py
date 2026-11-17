@@ -6,6 +6,7 @@ import redis
 from filelock import FileLock, Timeout
 
 from src.common.bl.dismissal_expiry_bl import DismissalExpiryBl
+from src.common.bl.maintenance_window_reveal_bl import MaintenanceWindowRevealBl
 from src.common.bl.maintenance_windows_bl import MaintenanceWindowsBl
 from src.common.consts import REDIS, WATCHER_LAPSED_TIME
 
@@ -13,7 +14,8 @@ logger = logging.getLogger(__name__)
 
 
 async def start_watcher_if_enabled():
-    """Start the watcher (dismissal expiry + maintenance-window recovery).
+    """Start the watcher (dismissal expiry, maintenance-window recovery, reveal
+    and freeze catch-up).
 
     Mode flags are read at call time from src.api.config / src.common.consts.
     Returns the asyncio task for the non-Redis loop, None otherwise.
@@ -70,6 +72,20 @@ async def async_process_watcher(*args):
                 ctx.get("pool"), DismissalExpiryBl.check_dismissal_expiry, logger
             )
 
+            # Tell open feeds when hide-mode windows end
+            await loop.run_in_executor(
+                ctx.get("pool"),
+                MaintenanceWindowRevealBl.notify_feeds_of_ended_windows,
+                logger,
+            )
+
+            # Catch up alerts a hide-mode window froze once it is not active
+            await loop.run_in_executor(
+                ctx.get("pool"),
+                MaintenanceWindowRevealBl.catch_up_released_alerts,
+                logger,
+            )
+
         except Exception as e:
             logger.error("Error in watcher process: %s", e, exc_info=True)
             raise
@@ -95,6 +111,20 @@ async def async_process_watcher(*args):
                     # Run dismissal expiry check
                     await loop.run_in_executor(
                         None, DismissalExpiryBl.check_dismissal_expiry, logger
+                    )
+
+                    # Tell open feeds when hide-mode windows end
+                    await loop.run_in_executor(
+                        None,
+                        MaintenanceWindowRevealBl.notify_feeds_of_ended_windows,
+                        logger,
+                    )
+
+                    # Catch up alerts a hide-mode window froze once it is not active
+                    await loop.run_in_executor(
+                        None,
+                        MaintenanceWindowRevealBl.catch_up_released_alerts,
+                        logger,
                     )
 
                     logger.info(
