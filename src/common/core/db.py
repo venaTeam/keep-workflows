@@ -4923,6 +4923,14 @@ def inherit_incident_status(
             continue
         for key, value in enrichments.items():
             setattr(last_alert, key, value)
+        if (
+            effective == IncidentStatus.SUPPRESSED.value
+            and last_alert.status == IncidentStatus.SUPPRESSED.value
+        ):
+            # A stored 'suppressed' (the status dropdown still writes one) is not
+            # an override to revert to: left in place, the alert would stay
+            # suppressed after the incident's dismissal lapses.
+            last_alert.status = None
         session.add(last_alert)
         session.add(
             AlertAudit(
