@@ -4854,8 +4854,10 @@ def inherit_incident_status(
     deadline and all, so the new alert comes back on the same clock as the
     incident.
 
-    Only suppressed and acknowledged are inherited; a firing or resolved incident
-    has nothing to impose on an alert that just arrived. Resolved alerts are never
+    Only suppressed and acknowledged statuses are inherited; a firing or resolved
+    incident has no status to impose on an alert that just arrived. The incident's
+    assignee is inherited whatever its status: an alert that joins a claimed
+    incident belongs to whoever claimed it. Resolved alerts are never
     touched — an alert that has stopped firing has finished its own lifecycle, and
     dragging it back out would misreport reality.
 
@@ -4871,7 +4873,7 @@ def inherit_incident_status(
     keep-api-gateway.
     """
     effective = incident.get_effective_status()
-    if effective not in (
+    if not incident.assignee and effective not in (
         IncidentStatus.SUPPRESSED.value,
         IncidentStatus.ACKNOWLEDGED.value,
     ):
@@ -4894,7 +4896,7 @@ def inherit_incident_status(
                 else " permanently"
             )
         )
-    else:
+    elif effective == IncidentStatus.ACKNOWLEDGED.value:
         # Acknowledged ends any dismissal the alert was under: it is visible
         # again by definition.
         enrichments = {
@@ -4903,8 +4905,12 @@ def inherit_incident_status(
             "dismissed_until": None,
         }
         description = f"Alert acknowledged by incident {incident.id}"
-        if incident.assignee:
-            enrichments["assignee"] = incident.assignee
+    else:
+        enrichments = {}
+        description = f"Alert assigned by incident {incident.id}"
+
+    if incident.assignee:
+        enrichments["assignee"] = incident.assignee
 
     rows = session.exec(
         select(LastAlert, Alert.status)
