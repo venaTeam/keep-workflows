@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 FINGERPRINT = "fp-dismissal-expiry"
 
 
-def _insert_dismissed_alert(session, dismissed_until):
+def _insert_dismissed_alert(session, dismissed_until, status="suppressed"):
     alert = Alert(
         tenant_id=SINGLE_TENANT_UUID,
         provider_type="test",
@@ -47,7 +47,7 @@ def _insert_dismissed_alert(session, dismissed_until):
         alert_id=alert.id,
         timestamp=datetime.datetime.utcnow(),
         first_timestamp=datetime.datetime.utcnow(),
-        status="suppressed",
+        status=status,
         dismiss_mode="dismiss_until",
         dismissed_until=dismissed_until,
     )
@@ -94,6 +94,44 @@ def test_expired_dismissal_clears_state_and_audits(db_session):
     ).all()
     assert len(audits) == 1
     assert audits[0].user_id == "system"
+
+
+def test_expiry_keeps_the_status_override_the_alert_reverts_to(db_session):
+    """Suppression is derived from dismiss_mode/dismissed_until, so `status`
+    holds the override the alert comes back as. An acknowledged alert dismissed
+    until a deadline must read acknowledged after it, not the provider's firing."""
+    past = datetime.datetime.utcnow() - datetime.timedelta(hours=1)
+    _, last_alert = _insert_dismissed_alert(db_session, past, status="acknowledged")
+
+    with patch("src.common.bl.dismissal_expiry_bl.ElasticClient") as elastic_cls, patch(
+        "src.common.bl.dismissal_expiry_bl.requests"
+    ):
+        DismissalExpiryBl.check_dismissal_expiry(logger, session=db_session)
+
+    db_session.refresh(last_alert)
+    assert last_alert.status == "acknowledged"
+    assert last_alert.dismiss_mode is None
+    assert last_alert.dismissed_until is None
+
+    dto = elastic_cls.return_value.index_alert.call_args[0][0]
+    assert dto.status == "acknowledged"
+
+
+def test_expiry_without_override_reverts_to_provider_status(db_session):
+    past = datetime.datetime.utcnow() - datetime.timedelta(hours=1)
+    _, last_alert = _insert_dismissed_alert(db_session, past, status=None)
+
+    with patch("src.common.bl.dismissal_expiry_bl.ElasticClient") as elastic_cls, patch(
+        "src.common.bl.dismissal_expiry_bl.requests"
+    ):
+        DismissalExpiryBl.check_dismissal_expiry(logger, session=db_session)
+
+    db_session.refresh(last_alert)
+    assert last_alert.status is None
+    assert last_alert.dismiss_mode is None
+
+    dto = elastic_cls.return_value.index_alert.call_args[0][0]
+    assert dto.status == "firing"
 
 
 def test_future_dismissal_left_untouched(db_session):

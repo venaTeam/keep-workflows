@@ -4,8 +4,13 @@ Business logic for handling dismissal expiry.
 This module provides functionality to automatically expire alert dismissals
 when their dismissed_until timestamp has passed.
 
-Dismiss state lives on typed LastAlert columns (status, dismiss_mode,
-dismissed_until) instead of the alertenrichment JSONB column.
+Dismiss state lives on typed LastAlert columns (dismiss_mode, dismissed_until)
+instead of the alertenrichment JSONB column. Suppression is derived from them on
+read, so `status` is NOT part of the dismissal: it holds the user's override
+(e.g. acknowledged) that the alert reverts to once the dismissal lapses, and this
+sweep must leave it alone. Only a stored 'suppressed' — left by rows written
+before dismissal stopped writing status — is cleared, since that is not a status
+anything should revert to.
 """
 
 import datetime
@@ -22,6 +27,9 @@ from src.common.core.elastic import ElasticClient
 from src.common.models.action_type import ActionType
 from src.common.models.alert import AlertDto
 from src.common.models.db.alert import Alert, AlertAudit, LastAlert
+
+# What a dismissal stored in `status` before suppression became derived.
+SUPPRESSED_STATUS = "suppressed"
 
 
 class DismissalExpiryBl:
@@ -67,7 +75,8 @@ class DismissalExpiryBl:
 
         This function:
         1. Finds LastAlert records with expired dismissed_until timestamps
-        2. Resets status=NULL, dismiss_mode=NULL, dismissed_until=NULL
+        2. Resets dismiss_mode=NULL, dismissed_until=NULL, keeping the status
+           override the alert reverts to (a legacy stored 'suppressed' is cleared)
         3. Updates Elasticsearch indexes
         4. Notifies UI of changes
         5. Adds audit trail
@@ -108,8 +117,11 @@ class DismissalExpiryBl:
                 # Store original values for audit
                 original_dismissed_until = last_alert.dismissed_until
 
-                # Reset dismiss state on the LastAlert row.
-                last_alert.status = None
+                # Reset dismiss state on the LastAlert row. The status override
+                # is what the alert reverts to — only a legacy stored
+                # 'suppressed' goes, or the alert would stay suppressed forever.
+                if last_alert.status == SUPPRESSED_STATUS:
+                    last_alert.status = None
                 last_alert.dismiss_mode = None
                 last_alert.dismissed_until = None
                 session.add(last_alert)
@@ -123,7 +135,7 @@ class DismissalExpiryBl:
                         action=ActionType.DISMISSAL_EXPIRED.value,
                         description=(
                             f"Dismissal expired at {original_dismissed_until}, "
-                            f"alert restored (status/dismiss_mode/dismissed_until cleared)"
+                            f"alert restored to {last_alert.status or 'its provider status'}"
                         ),
                     )
                     session.add(audit)
@@ -155,8 +167,11 @@ class DismissalExpiryBl:
 
                     if latest_alert:
                         # AlertDto built from provider data; dismiss state is now
-                        # cleared, so the DTO reflects the original alert status.
+                        # cleared, so the DTO reflects the user's status override
+                        # if there is one, else the provider's own status.
                         alert_data = latest_alert.dict()
+                        if last_alert.status is not None:
+                            alert_data["status"] = last_alert.status
                         # Alert.id is a UUID; AlertDto.id (alias event_id) requires str.
                         alert_data["id"] = (
                             str(latest_alert.id) if latest_alert.id else None
