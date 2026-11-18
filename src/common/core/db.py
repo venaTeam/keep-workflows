@@ -1604,12 +1604,23 @@ def _normalize_alert_enrichments(enrichments: dict, strict: bool) -> dict:
     """Translate legacy keys and handle unknown keys for the typed-column path.
 
     - Translates `dismissed`/`dismiss_until` -> `status`/`dismiss_mode`/`dismissed_until`.
+    - Saves `status='suppressed'` as a permanent dismissal, never as a status.
     - Unknown keys:
         - strict=True (route-driven): raise ValueError (-> 422 at the route).
         - strict=False (system writes — mapping/extraction/workflow YAML enrich):
           discard with a warning. Mirrors keep-api-gateway `normalize_enrichments`.
     """
     translated = _translate_dismissed(enrichments)
+    # The status dropdown's "suppressed" is a dismissal, not a status. Stored as a
+    # status it never lapses and becomes what the alert "reverts" to, so save it as
+    # a permanent dismissal (or let a dismissal sent with it carry it). `status`
+    # then only ever holds something the alert can come back as.
+    if translated.get("status") == AlertStatus.SUPPRESSED.value:
+        translated.pop("status")
+        if not translated.get("dismiss_mode"):
+            translated["dismiss_mode"] = DismissMode.PERMANENT.value
+            translated["dismissed_until"] = None
+
     unknown = set(translated.keys()) - LASTALERT_ENRICHMENT_COLUMNS
     if unknown:
         if strict:
@@ -4929,14 +4940,6 @@ def inherit_incident_status(
             continue
         for key, value in enrichments.items():
             setattr(last_alert, key, value)
-        if (
-            effective == IncidentStatus.SUPPRESSED.value
-            and last_alert.status == IncidentStatus.SUPPRESSED.value
-        ):
-            # A stored 'suppressed' (the status dropdown still writes one) is not
-            # an override to revert to: left in place, the alert would stay
-            # suppressed after the incident's dismissal lapses.
-            last_alert.status = None
         session.add(last_alert)
         session.add(
             AlertAudit(

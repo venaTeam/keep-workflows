@@ -353,7 +353,6 @@ def test_dismissal_expiry_resets_lastalert_columns(db_session, monkeypatch):
     monkeypatch.setattr("src.common.bl.dismissal_expiry_bl.requests", MagicMock())
 
     _, la = _make_alert(db_session, "fp-expire", status=AlertStatus.FIRING.value)
-    la.status = "suppressed"
     la.dismiss_mode = "dismiss_until"
     la.dismissed_until = datetime.now(tz=timezone.utc) - timedelta(hours=1)
     db_session.add(la)

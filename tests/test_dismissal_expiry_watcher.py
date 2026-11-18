@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 FINGERPRINT = "fp-dismissal-expiry"
 
 
-def _insert_dismissed_alert(session, dismissed_until, status="suppressed"):
+def _insert_dismissed_alert(session, dismissed_until, status=None):
     alert = Alert(
         tenant_id=SINGLE_TENANT_UUID,
         provider_type="test",
@@ -146,7 +146,7 @@ def test_future_dismissal_left_untouched(db_session):
     requests_mock.post.assert_not_called()
 
     db_session.refresh(last_alert)
-    assert last_alert.status == "suppressed"
+    assert last_alert.status is None
     assert last_alert.dismiss_mode == "dismiss_until"
     assert last_alert.dismissed_until is not None
 
