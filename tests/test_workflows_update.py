@@ -323,7 +323,7 @@ def test_workflow_update_from_workflow(db_session, workflow_manager, mocker):
 
     # Wait for workflow execution to complete
     workflow_execution = wait_for_workflow_execution(
-        SINGLE_TENANT_UUID, "http-workflow-sync"
+        SINGLE_TENANT_UUID, "http-workflow-sync", exclude_ids=[workflow_execution.id]
     )
 
     # Verify workflow execution
