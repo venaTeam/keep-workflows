@@ -5539,7 +5539,8 @@ def confirm_predicted_incident_by_id(
         ).update(
             {
                 "is_visible": True,
-                "is_candidate": True,
+                # Confirming is what turns a candidate into a real incident.
+                "is_candidate": False,
             }
         )
 
