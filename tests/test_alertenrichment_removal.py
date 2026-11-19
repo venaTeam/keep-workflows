@@ -186,13 +186,16 @@ def test_dismissed_translation_permanent(db_session):
         action_description="dismiss",
     )
     la = db_session.query(LastAlert).filter_by(fingerprint="fp-dismiss").one()
-    assert la.status == "suppressed"
+    # Dismiss does NOT write status: suppression is derived from the dismiss
+    # columns on read, leaving `status` holding what the alert reverts to.
+    assert la.status is None
     assert la.dismiss_mode == "permanent"
+    assert la.get_effective_status() == "suppressed"
 
 
 def test_dismissed_false_clears(db_session):
     _, la = _make_alert(db_session, "fp-undismiss")
-    la.status = "suppressed"
+    la.status = "acknowledged"
     la.dismiss_mode = "permanent"
     db_session.add(la)
     db_session.commit()
@@ -206,9 +209,11 @@ def test_dismissed_false_clears(db_session):
         action_description="undismiss",
     )
     la = db_session.query(LastAlert).filter_by(fingerprint="fp-undismiss").one()
-    assert la.status is None
+    # Undismiss clears dismiss_mode and dismissed_until, but does NOT wipe status
+    assert la.status == "acknowledged"
     assert la.dismiss_mode is None
     assert la.dismissed_until is None
+    assert la.get_effective_status() == "acknowledged"
 
 
 def test_dismiss_until_translation(db_session):
@@ -224,9 +229,10 @@ def test_dismiss_until_translation(db_session):
         action_description="dismiss until",
     )
     la = db_session.query(LastAlert).filter_by(fingerprint="fp-until").one()
-    assert la.status == "suppressed"
+    assert la.status is None
     assert la.dismiss_mode == "dismiss_until"
     assert la.dismissed_until is not None
+    assert la.get_effective_status() == "suppressed"
 
 
 def test_set_last_alert_status_disposable_clears_on_refire(db_session):
@@ -347,7 +353,6 @@ def test_dismissal_expiry_resets_lastalert_columns(db_session, monkeypatch):
     monkeypatch.setattr("src.common.bl.dismissal_expiry_bl.requests", MagicMock())
 
     _, la = _make_alert(db_session, "fp-expire", status=AlertStatus.FIRING.value)
-    la.status = "suppressed"
     la.dismiss_mode = "dismiss_until"
     la.dismissed_until = datetime.now(tz=timezone.utc) - timedelta(hours=1)
     db_session.add(la)

@@ -30,11 +30,18 @@ from src.common.models.db.alert import (
     LastAlertToIncident,
 )
 from src.common.models.db.facet import FacetType
+from src.common.models.db.helpers import suppressed_if_dismiss_active_sql
+from src.common.models.db.incident import IncidentStatus
 from src.common.models.facet import FacetDto, FacetOptionDto, FacetOptionsQueryDto
 from src.common.models.incident import IncidentSorting
 from src.common.models.query import SortOptionsDto
 
 logger = logging.getLogger(__name__)
+
+# SQL twin of `Incident.is_dismiss_active` — yields 'suppressed' while a
+# dismissal is in force and NULL otherwise, so it can sit at the head of a
+# COALESCE chain and fall through when it isn't.
+_SUPPRESSED_IF_DISMISS_ACTIVE_SQL = suppressed_if_dismiss_active_sql("incident")
 
 incident_field_configurations = [
     FieldMappingConfiguration(
@@ -62,8 +69,25 @@ incident_field_configurations = [
     ),
     FieldMappingConfiguration(
         map_from_pattern="status",
-        map_to=["JSON(incidentenrichment.enrichments).*", "incident.status"],
+        # Resolved in order, first non-NULL wins:
+        #   1. a live dismissal -> 'suppressed'. Derived, never stored, so a
+        #      time-boxed dismissal stops matching the moment it expires without
+        #      anything having to rewrite the row.
+        #   2. the stored column.
+        # The enrichment JSONB deliberately does NOT appear here. It used to,
+        # outranking the real column, which let any `status` key written through
+        # /incidents/{id}/enrich silently shadow the incident's actual status.
+        # Status and dismiss state are owned by /incidents/{id}/status alone —
+        # see INCIDENT_STATUS_OWNED_KEYS.
+        # Mirrors `Incident.is_dismiss_active` — keep the two in step.
+        map_to=[
+            _SUPPRESSED_IF_DISMISS_ACTIVE_SQL,
+            "incident.status",
+        ],
         data_type=DataType.STRING,
+        enum_values=list(
+            reversed([item.value for _, item in enumerate(IncidentStatus)])
+        ),
     ),
     FieldMappingConfiguration(
         map_from_pattern="creation_time",

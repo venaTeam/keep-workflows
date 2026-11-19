@@ -12,19 +12,30 @@ from sqlmodel import (
     JSON,
     TEXT,
     Column,
+    DateTime,
     Field,
     Index,
     Relationship,
     Session,
     SQLModel,
+    String,
     func,
     select,
     text,
 )
 
 from src.common.models.alert import SeverityBaseInterface
+from src.common.models.db.helpers import DismissMode, is_dismiss_active
 from src.common.models.db.rule import ResolveOn
 from src.common.models.db.tenant import Tenant
+
+
+# Alerts and incidents model dismissal identically, so they share one enum and
+# one "is it still in force" rule (src/common/models/db/helpers.py). The alias keeps the
+# incident-flavoured name these modules already use.
+class IncidentDismissMode(str, enum.Enum):
+    PERMANENT = DismissMode.PERMANENT.value
+    DISMISS_UNTIL = DismissMode.DISMISS_UNTIL.value
 
 
 class IncidentType(str, enum.Enum):
@@ -57,8 +68,11 @@ class IncidentStatus(enum.Enum):
     ACKNOWLEDGED = "acknowledged"
     # Incident was merged with another incident
     MERGED = "merged"
-    # Incident was removed
-    DELETED = "deleted"
+    # Incident is dismissed, permanently or until a deadline. NEVER stored in
+    # `Incident.status` — it is derived from dismiss_mode/dismissed_until so a
+    # time-boxed dismissal can expire without anything rewriting the row. See
+    # `Incident.get_effective_status`.
+    SUPPRESSED = "suppressed"
 
     @classmethod
     def get_active(cls, return_values=False) -> List[str | enum.Enum]:
@@ -69,7 +83,7 @@ class IncidentStatus(enum.Enum):
 
     @classmethod
     def get_closed(cls, return_values=False) -> List[str | enum.Enum]:
-        statuses = [cls.RESOLVED, cls.MERGED, cls.DELETED]
+        statuses = [cls.RESOLVED, cls.MERGED]
         if return_values:
             return [s.value for s in statuses]
         return statuses
@@ -94,6 +108,19 @@ class Incident(SQLModel, table=True):
     forced_severity: bool = Field(default=False)
 
     status: str = Field(default=IncidentStatus.FIRING.value, index=True)
+
+    # === Dismiss state ===
+    # Mirrors the typed dismiss columns on LastAlert. Deliberately kept OUT of
+    # `status`: storing "suppressed" there would leave a time-boxed dismissal
+    # stuck suppressed after it expired, since nothing sweeps the table.
+    dismiss_mode: str | None = Field(
+        default=None,
+        sa_column=Column(String(20), nullable=True),
+    )
+    dismissed_until: datetime | None = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True, index=True),
+    )
 
     creation_time: datetime = Field(default_factory=datetime.utcnow)
 
@@ -207,6 +234,22 @@ class Incident(SQLModel, table=True):
 
     def set_enrichments(self, enrichments):
         self._enrichments = enrichments
+
+    def is_dismiss_active(self, now: datetime | None = None) -> bool:
+        """Whether this incident's dismissal is in force right now.
+
+        A permanent dismissal always is. A time-boxed one only until
+        `dismissed_until` passes — and nothing rewrites the row at that moment,
+        so callers must ask rather than trust a stored status.
+        """
+        return is_dismiss_active(self.dismiss_mode, self.dismissed_until, now)
+
+    def get_effective_status(self, now: datetime | None = None) -> str:
+        """The status to show callers: `suppressed` while a dismissal is live,
+        otherwise the underlying stored status it will revert to."""
+        if self.is_dismiss_active(now):
+            return IncidentStatus.SUPPRESSED.value
+        return self.status
 
 
 @retry(exceptions=(IntegrityError,), tries=3, delay=0.1, backoff=2, jitter=(0, 0.1))

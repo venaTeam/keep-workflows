@@ -18,14 +18,20 @@ from sqlmodel import select
 
 from src.common.bl.dismissal_expiry_bl import DismissalExpiryBl
 from src.common.core.dependencies import SINGLE_TENANT_UUID
-from src.common.models.db.alert import Alert, AlertAudit, LastAlert
+from src.common.models.db.alert import (
+    Alert,
+    AlertAudit,
+    LastAlert,
+    LastAlertToIncident,
+)
+from src.common.models.db.incident import Incident
 
 logger = logging.getLogger(__name__)
 
 FINGERPRINT = "fp-dismissal-expiry"
 
 
-def _insert_dismissed_alert(session, dismissed_until):
+def _insert_dismissed_alert(session, dismissed_until, status=None):
     alert = Alert(
         tenant_id=SINGLE_TENANT_UUID,
         provider_type="test",
@@ -47,7 +53,7 @@ def _insert_dismissed_alert(session, dismissed_until):
         alert_id=alert.id,
         timestamp=datetime.datetime.utcnow(),
         first_timestamp=datetime.datetime.utcnow(),
-        status="suppressed",
+        status=status,
         dismiss_mode="dismiss_until",
         dismissed_until=dismissed_until,
     )
@@ -96,6 +102,81 @@ def test_expired_dismissal_clears_state_and_audits(db_session):
     assert audits[0].user_id == "system"
 
 
+def test_expiry_keeps_the_status_override_the_alert_reverts_to(db_session):
+    """Suppression is derived from dismiss_mode/dismissed_until, so `status`
+    holds the override the alert comes back as. An acknowledged alert dismissed
+    until a deadline must read acknowledged after it, not the provider's firing."""
+    past = datetime.datetime.utcnow() - datetime.timedelta(hours=1)
+    _, last_alert = _insert_dismissed_alert(db_session, past, status="acknowledged")
+
+    with patch("src.common.bl.dismissal_expiry_bl.ElasticClient") as elastic_cls, patch(
+        "src.common.bl.dismissal_expiry_bl.requests"
+    ):
+        DismissalExpiryBl.check_dismissal_expiry(logger, session=db_session)
+
+    db_session.refresh(last_alert)
+    assert last_alert.status == "acknowledged"
+    assert last_alert.dismiss_mode is None
+    assert last_alert.dismissed_until is None
+
+    dto = elastic_cls.return_value.index_alert.call_args[0][0]
+    assert dto.status == "acknowledged"
+
+
+def test_expiry_reindex_keeps_the_alerts_overrides_and_incidents(db_session):
+    """index_alert replaces the whole document. Built from the bare Alert row it
+    dropped the assignee, note, status override and incident links until
+    something else reindexed the alert."""
+    past = datetime.datetime.utcnow() - datetime.timedelta(hours=1)
+    _, last_alert = _insert_dismissed_alert(db_session, past, status="acknowledged")
+    last_alert.assignee = "owner@keep"
+    last_alert.note = "looking into it"
+    incident = Incident(
+        tenant_id=SINGLE_TENANT_UUID,
+        user_generated_name="holding incident",
+        user_summary="s",
+        generated_summary="s",
+    )
+    db_session.add_all([last_alert, incident])
+    db_session.commit()
+    db_session.add(
+        LastAlertToIncident(
+            tenant_id=SINGLE_TENANT_UUID,
+            fingerprint=FINGERPRINT,
+            incident_id=incident.id,
+        )
+    )
+    db_session.commit()
+
+    with patch("src.common.bl.dismissal_expiry_bl.ElasticClient") as elastic_cls, patch(
+        "src.common.bl.dismissal_expiry_bl.requests"
+    ):
+        DismissalExpiryBl.check_dismissal_expiry(logger, session=db_session)
+
+    dto = elastic_cls.return_value.index_alert.call_args[0][0]
+    assert dto.status == "acknowledged"
+    assert dto.assignee == "owner@keep"
+    assert dto.note == "looking into it"
+    assert str(incident.id) in dto.incident
+
+
+def test_expiry_without_override_reverts_to_provider_status(db_session):
+    past = datetime.datetime.utcnow() - datetime.timedelta(hours=1)
+    _, last_alert = _insert_dismissed_alert(db_session, past, status=None)
+
+    with patch("src.common.bl.dismissal_expiry_bl.ElasticClient") as elastic_cls, patch(
+        "src.common.bl.dismissal_expiry_bl.requests"
+    ):
+        DismissalExpiryBl.check_dismissal_expiry(logger, session=db_session)
+
+    db_session.refresh(last_alert)
+    assert last_alert.status is None
+    assert last_alert.dismiss_mode is None
+
+    dto = elastic_cls.return_value.index_alert.call_args[0][0]
+    assert dto.status == "firing"
+
+
 def test_future_dismissal_left_untouched(db_session):
     future = datetime.datetime.utcnow() + datetime.timedelta(hours=1)
     _, last_alert = _insert_dismissed_alert(db_session, future)
@@ -108,7 +189,7 @@ def test_future_dismissal_left_untouched(db_session):
     requests_mock.post.assert_not_called()
 
     db_session.refresh(last_alert)
-    assert last_alert.status == "suppressed"
+    assert last_alert.status is None
     assert last_alert.dismiss_mode == "dismiss_until"
     assert last_alert.dismissed_until is not None
 

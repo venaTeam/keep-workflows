@@ -4,8 +4,12 @@ Business logic for handling dismissal expiry.
 This module provides functionality to automatically expire alert dismissals
 when their dismissed_until timestamp has passed.
 
-Dismiss state lives on typed LastAlert columns (status, dismiss_mode,
-dismissed_until) instead of the alertenrichment JSONB column.
+Dismiss state lives on typed LastAlert columns (dismiss_mode, dismissed_until)
+instead of the alertenrichment JSONB column. Suppression is derived from them on
+read, so `status` is NOT part of the dismissal: it holds the user's override
+(e.g. acknowledged) that the alert reverts to once the dismissal lapses, and this
+sweep must leave it alone. It never holds 'suppressed': the write path saves that
+as a permanent dismissal.
 """
 
 import datetime
@@ -17,12 +21,11 @@ import requests
 from sqlmodel import Session, select
 
 from src.common.consts import SSE_NOTIFY_HEADERS
-from src.common.core.db import get_session_sync
+from src.common.core.db import enrich_alerts_with_incidents, get_session_sync
 from src.common.core.elastic import ElasticClient
 from src.common.models.action_type import ActionType
-from src.common.models.alert import AlertDto
 from src.common.models.db.alert import Alert, AlertAudit, LastAlert
-
+from src.common.utils.enrichment_helpers import convert_db_alerts_to_dto_alerts
 
 class DismissalExpiryBl:
     @staticmethod
@@ -67,7 +70,8 @@ class DismissalExpiryBl:
 
         This function:
         1. Finds LastAlert records with expired dismissed_until timestamps
-        2. Resets status=NULL, dismiss_mode=NULL, dismissed_until=NULL
+        2. Resets dismiss_mode=NULL, dismissed_until=NULL, keeping the status
+           override the alert reverts to
         3. Updates Elasticsearch indexes
         4. Notifies UI of changes
         5. Adds audit trail
@@ -108,8 +112,8 @@ class DismissalExpiryBl:
                 # Store original values for audit
                 original_dismissed_until = last_alert.dismissed_until
 
-                # Reset dismiss state on the LastAlert row.
-                last_alert.status = None
+                # Reset dismiss state on the LastAlert row. The status override
+                # is what the alert reverts to, so it stays.
                 last_alert.dismiss_mode = None
                 last_alert.dismissed_until = None
                 session.add(last_alert)
@@ -123,7 +127,7 @@ class DismissalExpiryBl:
                         action=ActionType.DISMISSAL_EXPIRED.value,
                         description=(
                             f"Dismissal expired at {original_dismissed_until}, "
-                            f"alert restored (status/dismiss_mode/dismissed_until cleared)"
+                            f"alert restored to {last_alert.status or 'its provider status'}"
                         ),
                     )
                     session.add(audit)
@@ -154,16 +158,20 @@ class DismissalExpiryBl:
                     ).first()
 
                     if latest_alert:
-                        # AlertDto built from provider data; dismiss state is now
-                        # cleared, so the DTO reflects the original alert status.
-                        alert_data = latest_alert.dict()
-                        # Alert.id is a UUID; AlertDto.id (alias event_id) requires str.
-                        alert_data["id"] = (
-                            str(latest_alert.id) if latest_alert.id else None
+                        # Built the way every other reindex builds an alert: the
+                        # latest occurrence plus the user's overrides (status,
+                        # assignee, note, ticket) and its incident links.
+                        # index_alert replaces the whole document, so building it
+                        # from the bare Alert row dropped all of those. The
+                        # session flushes the cleared dismissal before the
+                        # LastAlert read, so the document no longer reads
+                        # suppressed.
+                        enrich_alerts_with_incidents(
+                            last_alert.tenant_id, [latest_alert], session=session
                         )
-                        alert_data["dismiss_until"] = None
-
-                        alert_dto = AlertDto(**alert_data)
+                        alert_dto = convert_db_alerts_to_dto_alerts(
+                            [latest_alert], with_incidents=True, session=session
+                        )[0]
 
                         elastic_client = ElasticClient(last_alert.tenant_id)
                         elastic_client.index_alert(alert_dto)
