@@ -4883,6 +4883,11 @@ def inherit_incident_status(
     keep-event-handler and `IncidentBl.inherit_incident_status` in
     keep-api-gateway.
     """
+    if incident.is_candidate:
+        # From a "require approval" rule: nobody has approved the grouping yet,
+        # so the alerts it pulls in take nothing from it.
+        return []
+
     effective = incident.get_effective_status()
     if not incident.assignee and effective not in (
         IncidentStatus.SUPPRESSED.value,
@@ -4899,6 +4904,7 @@ def inherit_incident_status(
             "dismiss_mode": incident.dismiss_mode,
             "dismissed_until": incident.dismissed_until,
         }
+        action = ActionType.MANUAL_STATUS_CHANGE
         description = (
             f"Alert suppressed by incident {incident.id}"
             + (
@@ -4915,9 +4921,12 @@ def inherit_incident_status(
             "dismiss_mode": None,
             "dismissed_until": None,
         }
+        action = ActionType.MANUAL_STATUS_CHANGE
         description = f"Alert acknowledged by incident {incident.id}"
     else:
+        # Only the assignee travels: no status changes, so it is not logged as one.
         enrichments = {}
+        action = ActionType.GENERIC_ENRICH
         description = f"Alert assigned by incident {incident.id}"
 
     if incident.assignee:
@@ -4946,7 +4955,7 @@ def inherit_incident_status(
                 tenant_id=tenant_id,
                 fingerprint=last_alert.fingerprint,
                 user_id=actor,
-                action=ActionType.MANUAL_STATUS_CHANGE.value,
+                action=action.value,
                 description=description,
             )
         )
