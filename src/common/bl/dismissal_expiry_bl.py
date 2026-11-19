@@ -21,11 +21,11 @@ import requests
 from sqlmodel import Session, select
 
 from src.common.consts import SSE_NOTIFY_HEADERS
-from src.common.core.db import get_session_sync
+from src.common.core.db import enrich_alerts_with_incidents, get_session_sync
 from src.common.core.elastic import ElasticClient
 from src.common.models.action_type import ActionType
-from src.common.models.alert import AlertDto
 from src.common.models.db.alert import Alert, AlertAudit, LastAlert
+from src.common.utils.enrichment_helpers import convert_db_alerts_to_dto_alerts
 
 class DismissalExpiryBl:
     @staticmethod
@@ -158,19 +158,20 @@ class DismissalExpiryBl:
                     ).first()
 
                     if latest_alert:
-                        # AlertDto built from provider data; dismiss state is now
-                        # cleared, so the DTO reflects the user's status override
-                        # if there is one, else the provider's own status.
-                        alert_data = latest_alert.dict()
-                        if last_alert.status is not None:
-                            alert_data["status"] = last_alert.status
-                        # Alert.id is a UUID; AlertDto.id (alias event_id) requires str.
-                        alert_data["id"] = (
-                            str(latest_alert.id) if latest_alert.id else None
+                        # Built the way every other reindex builds an alert: the
+                        # latest occurrence plus the user's overrides (status,
+                        # assignee, note, ticket) and its incident links.
+                        # index_alert replaces the whole document, so building it
+                        # from the bare Alert row dropped all of those. The
+                        # session flushes the cleared dismissal before the
+                        # LastAlert read, so the document no longer reads
+                        # suppressed.
+                        enrich_alerts_with_incidents(
+                            last_alert.tenant_id, [latest_alert], session=session
                         )
-                        alert_data["dismiss_until"] = None
-
-                        alert_dto = AlertDto(**alert_data)
+                        alert_dto = convert_db_alerts_to_dto_alerts(
+                            [latest_alert], with_incidents=True, session=session
+                        )[0]
 
                         elastic_client = ElasticClient(last_alert.tenant_id)
                         elastic_client.index_alert(alert_dto)

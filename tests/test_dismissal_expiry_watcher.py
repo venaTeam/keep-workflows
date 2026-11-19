@@ -18,7 +18,13 @@ from sqlmodel import select
 
 from src.common.bl.dismissal_expiry_bl import DismissalExpiryBl
 from src.common.core.dependencies import SINGLE_TENANT_UUID
-from src.common.models.db.alert import Alert, AlertAudit, LastAlert
+from src.common.models.db.alert import (
+    Alert,
+    AlertAudit,
+    LastAlert,
+    LastAlertToIncident,
+)
+from src.common.models.db.incident import Incident
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +121,43 @@ def test_expiry_keeps_the_status_override_the_alert_reverts_to(db_session):
 
     dto = elastic_cls.return_value.index_alert.call_args[0][0]
     assert dto.status == "acknowledged"
+
+
+def test_expiry_reindex_keeps_the_alerts_overrides_and_incidents(db_session):
+    """index_alert replaces the whole document. Built from the bare Alert row it
+    dropped the assignee, note, status override and incident links until
+    something else reindexed the alert."""
+    past = datetime.datetime.utcnow() - datetime.timedelta(hours=1)
+    _, last_alert = _insert_dismissed_alert(db_session, past, status="acknowledged")
+    last_alert.assignee = "owner@keep"
+    last_alert.note = "looking into it"
+    incident = Incident(
+        tenant_id=SINGLE_TENANT_UUID,
+        user_generated_name="holding incident",
+        user_summary="s",
+        generated_summary="s",
+    )
+    db_session.add_all([last_alert, incident])
+    db_session.commit()
+    db_session.add(
+        LastAlertToIncident(
+            tenant_id=SINGLE_TENANT_UUID,
+            fingerprint=FINGERPRINT,
+            incident_id=incident.id,
+        )
+    )
+    db_session.commit()
+
+    with patch("src.common.bl.dismissal_expiry_bl.ElasticClient") as elastic_cls, patch(
+        "src.common.bl.dismissal_expiry_bl.requests"
+    ):
+        DismissalExpiryBl.check_dismissal_expiry(logger, session=db_session)
+
+    dto = elastic_cls.return_value.index_alert.call_args[0][0]
+    assert dto.status == "acknowledged"
+    assert dto.assignee == "owner@keep"
+    assert dto.note == "looking into it"
+    assert str(incident.id) in dto.incident
 
 
 def test_expiry_without_override_reverts_to_provider_status(db_session):
