@@ -14,7 +14,7 @@ from collections import defaultdict
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from functools import wraps
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Type, Union
+from typing import Any, Dict, Iterator, List, Literal, Optional, Tuple, Type, Union
 from uuid import UUID, uuid4
 
 import pytz
@@ -5772,52 +5772,68 @@ def is_all_alerts_in_status(
 def is_last_incident_alert_resolved(
     incident: Incident, session: Optional[Session] = None
 ) -> bool:
-    return is_edge_incident_alert_resolved(incident, func.max, session)
+    return is_edge_incident_alert_resolved(incident, "last", session)
 
 
 def is_first_incident_alert_resolved(
     incident: Incident, session: Optional[Session] = None
 ) -> bool:
-    return is_edge_incident_alert_resolved(incident, func.min, session)
+    return is_edge_incident_alert_resolved(incident, "first", session)
 
 
 def is_edge_incident_alert_resolved(
-    incident: Incident, direction: Callable, session: Optional[Session] = None
+    incident: Incident,
+    edge: Literal["first", "last"],
+    session: Optional[Session] = None,
 ) -> bool:
+    """Is the incident's first/last linked alert resolved?
+
+    Only the incident's live links count. "first" and "last" order the linked
+    alerts by `LastAlert.first_timestamp`, the time the fingerprint was first
+    seen at all. It is set once and never moves, so it is NOT when the alert
+    joined this incident. "first" is the linked alert whose fingerprint was
+    first seen earliest (ties: fingerprint ascending), "last" the one first
+    seen latest (ties: fingerprint descending). Resolved means its
+    `LastAlert.status` when set, else its latest `Alert.status`, equals
+    "resolved".
+    """
+    if edge == "first":
+        ordering = (LastAlert.first_timestamp.asc(), LastAlert.fingerprint.asc())
+    elif edge == "last":
+        ordering = (LastAlert.first_timestamp.desc(), LastAlert.fingerprint.desc())
+    else:
+        raise ValueError(f"edge must be 'first' or 'last', got {edge!r}")
+
     if incident.alerts_count == 0:
         return False
 
     with existed_or_new_session(session) as session:
-        # Enriched status override lives on the typed LastAlert column.
-        enriched_status_field = LastAlert.status
-        status_field = Alert.status
-
-        finerprint, enriched_status, status = session.exec(
-            select(Alert.fingerprint, enriched_status_field, status_field)
-            .select_from(Alert)
-            .join(
-                LastAlertToIncident,
-                and_(
-                    LastAlertToIncident.tenant_id == Alert.tenant_id,
-                    LastAlertToIncident.fingerprint == Alert.fingerprint,
-                ),
-            )
+        row = session.exec(
+            select(LastAlert.status, Alert.status)
+            .select_from(LastAlertToIncident)
             .join(
                 LastAlert,
                 and_(
-                    LastAlert.tenant_id == Alert.tenant_id,
-                    LastAlert.fingerprint == Alert.fingerprint,
+                    LastAlert.tenant_id == LastAlertToIncident.tenant_id,
+                    LastAlert.fingerprint == LastAlertToIncident.fingerprint,
                 ),
             )
-            .where(LastAlertToIncident.incident_id == incident.id)
-            .group_by(Alert.fingerprint)
-            .having(func.max(Alert.timestamp))
-            .order_by(direction(Alert.timestamp))
+            .join(Alert, Alert.id == LastAlert.alert_id)
+            .where(
+                LastAlertToIncident.tenant_id == incident.tenant_id,
+                LastAlertToIncident.incident_id == incident.id,
+                LastAlertToIncident.deleted_at == NULL_FOR_DELETED_AT,
+            )
+            .order_by(*ordering)
+            .limit(1)
         ).first()
 
-        return enriched_status == AlertStatus.RESOLVED.value or (
-            enriched_status is None and status == AlertStatus.RESOLVED.value
-        )
+    if row is None:
+        return False
+
+    enriched_status, status = row
+    effective_status = enriched_status if enriched_status is not None else status
+    return effective_status == AlertStatus.RESOLVED.value
 
 
 def get_alerts_metrics_by_provider(
