@@ -1,4 +1,5 @@
 import json
+import logging
 import time
 from datetime import datetime, timedelta
 
@@ -17,7 +18,8 @@ from src.common.core.db import (
 from src.common.core.dependencies import SINGLE_TENANT_UUID
 from src.common.models.alert import AlertDto, AlertSeverity, AlertStatus
 from src.common.models.db.incident import Incident, IncidentStatus
-from src.common.models.db.workflow import Workflow
+from src.common.logging import WorkflowContextFilter, WorkflowDBHandler
+from src.common.models.db.workflow import Workflow, WorkflowExecutionLog
 from src.common.models.incident import IncidentDto
 from src.common.utils.enrichment_helpers import convert_db_alerts_to_dto_alerts
 from src.identitymanager.authenticatedentity import AuthenticatedEntity
@@ -1871,3 +1873,94 @@ def test_get_all_workflows_with_last_execution(db_session, workflow_manager, moc
     )
     assert second_execution_wf_store is not None
     assert second_execution_wf_store["status"] == "error"
+
+
+workflow_definition_with_failing_action = """workflow:
+id: failing-action-workflow
+description: Action fails, logs must keep the details
+triggers:
+- type: alert
+  cel: name == "server-is-failing"
+steps:
+- name: mock-step
+  provider:
+    type: mock
+    with:
+      command_output: ok
+actions:
+- name: failing-action
+  provider:
+    type: console
+    with:
+      message: "hello"
+"""
+
+
+def test_workflow_execution_logs_stored_with_details(
+    db_session, workflow_manager, mocker, monkeypatch
+):
+    """The UI run log gets step/action INFO lines and failure details."""
+    monkeypatch.setattr("src.common.logging.KEEP_STORE_WORKFLOW_LOGS", True)
+    mocker.patch(
+        "src.providers.console_provider.console_provider.ConsoleProvider._notify",
+        side_effect=Exception("boom-error"),
+    )
+
+    handler = WorkflowDBHandler(flush_interval=3600)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    handler.addFilter(WorkflowContextFilter())
+    root_logger = logging.getLogger()
+    root_logger.addHandler(handler)
+    try:
+        workflow = Workflow(
+            id="failing-action-workflow",
+            name="failing-action-workflow",
+            tenant_id=SINGLE_TENANT_UUID,
+            description="Action fails",
+            created_by="test@keephq.dev",
+            interval=0,
+            workflow_raw=workflow_definition_with_failing_action,
+        )
+        db_session.add(workflow)
+        db_session.commit()
+
+        alert = AlertDto(
+            id="alert-1",
+            fingerprint="failing-1",
+            source=["grafana"],
+            name="server-is-failing",
+            status=AlertStatus.FIRING,
+            severity=AlertSeverity.CRITICAL,
+            last_received=datetime.now(tz=pytz.utc).isoformat(),
+        )
+        workflow_manager.insert_events(SINGLE_TENANT_UUID, [alert])
+
+        workflow_execution = wait_for_workflow_execution(
+            SINGLE_TENANT_UUID, workflow.id
+        )
+        assert workflow_execution is not None
+        assert workflow_execution.status == "error"
+        handler.flush()
+    finally:
+        root_logger.removeHandler(handler)
+        handler.close()
+
+    db_session.expire_all()
+    logs = (
+        db_session.query(WorkflowExecutionLog)
+        .filter(WorkflowExecutionLog.workflow_execution_id == workflow_execution.id)
+        .all()
+    )
+    messages = [log.message for log in logs]
+
+    assert "Running step mock-step" in messages
+    assert "Step mock-step ran successfully" in messages
+    assert "Running action failing-action" in messages
+    assert any(
+        "Action failing-action failed" in m and "boom-error" in m for m in messages
+    ), messages
+
+    running_workflow = next(
+        log for log in logs if log.message == f"Running workflow {workflow.id}"
+    )
+    assert "server-is-failing" in str(running_workflow.context["event"])

@@ -98,11 +98,13 @@ def _notify_refetch(logger: logging.Logger, tenant_id: str, reason: str) -> None
         )
         response.raise_for_status()
         logger.info(
-            f"Notified UI to refetch alerts {reason}", extra={"tenant_id": tenant_id}
+            "Notified UI to refetch alerts",
+            extra={"tenant_id": tenant_id, "reason": reason},
         )
     except Exception as e:
         logger.warning(
-            f"Failed to notify UI {reason}: {e}", extra={"tenant_id": tenant_id}
+            "Failed to notify UI",
+            extra={"tenant_id": tenant_id, "reason": reason, "error": str(e)},
         )
 
 
@@ -142,8 +144,6 @@ class MaintenanceWindowRevealBl:
     ):
         """Tell open feeds of tenants whose hide-mode windows just ended to
         refetch, via the gateway's /sse/notify bridge."""
-        logger.info("Starting maintenance window end check")
-
         now = _utcnow()
         since = MaintenanceWindowRevealBl._last_run or now - datetime.timedelta(
             seconds=WATCHER_LAPSED_TIME + FIRST_RUN_SLACK_SECONDS
@@ -160,21 +160,18 @@ class MaintenanceWindowRevealBl:
             MaintenanceWindowRevealBl._last_run = now
 
             if not tenant_ids:
-                logger.info("No maintenance windows with hidden alerts ended")
+                logger.debug("No maintenance windows with hidden alerts ended")
                 return
 
             for tenant_id in tenant_ids:
                 _notify_refetch(logger, tenant_id, "after maintenance window ended")
 
-        except Exception as e:
-            logger.error(
-                f"Error during maintenance window end check: {e}", exc_info=True
-            )
+        except Exception:
+            logger.exception("Maintenance window end check failed")
             raise
         finally:
             if owns_session:
                 session.close()
-            logger.info("Maintenance window end check completed")
 
     @staticmethod
     def get_released_frozen_alerts(
@@ -198,8 +195,6 @@ class MaintenanceWindowRevealBl:
         Each row is re-checked under its lock: a new occurrence may have caught
         it up already, or a window may have been re-enabled or extended since
         the scan."""
-        logger.info("Starting maintenance window freeze catch-up")
-
         owns_session = session is None
         if owns_session:
             session = get_session_sync()
@@ -210,7 +205,7 @@ class MaintenanceWindowRevealBl:
                 session, _utcnow()
             )
             if not candidates:
-                logger.info("No frozen alerts to catch up")
+                logger.debug("No frozen alerts to catch up")
                 return
 
             for tenant_id, fingerprint in candidates:
@@ -249,7 +244,8 @@ class MaintenanceWindowRevealBl:
         finally:
             if owns_session:
                 session.close()
-            logger.info(
-                "Maintenance window freeze catch-up completed",
-                extra={"tenants": len(caught_up_tenants)},
-            )
+            if caught_up_tenants:
+                logger.info(
+                    "Maintenance window freeze catch-up completed",
+                    extra={"tenants_count": len(caught_up_tenants)},
+                )
